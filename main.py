@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware  # ← 추가
 from contextlib import asynccontextmanager
 from config import SERVER_HOST, SERVER_PORT
 from services.embedding_service import embedding_service
@@ -28,6 +29,15 @@ app = FastAPI(
     description="Confluence 기반 RAG 챗봇 API",
     version="0.1.0",
     lifespan=lifespan
+)
+
+# ===== CORS 설정 추가 (필수!) =====
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 모든 출처 허용 (개발용, 프로덕션에서는 제한)
+    allow_credentials=True,
+    allow_methods=["*"],  # GET, POST, PUT, DELETE 등 모두 허용
+    allow_headers=["*"],  # 모든 헤더 허용
 )
 
 # 라우터 등록

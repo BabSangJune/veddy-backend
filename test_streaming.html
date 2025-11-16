@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VEDDY 스트리밍 테스트</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: #666;
+      font-weight: 500;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+    }
+    button {
+      background: #007bff;
+      color: white;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .response {
+      background: #f9f9f9;
+      border-left: 4px solid #007bff;
+      padding: 15px;
+      margin-top: 20px;
+      border-radius: 4px;
+      min-height: 100px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: 'Courier New', monospace;
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .loading {
+      color: #007bff;
+      font-style: italic;
+    }
+    .error {
+      color: #d32f2f;
+      background: #ffebee;
+      border-left-color: #d32f2f;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>🤖 VEDDY 스트리밍 응답 테스트</h1>
+
+  <div class="form-group">
+    <label for="userId">사용자 ID:</label>
+    <input type="email" id="userId" value="applause1319@naver.com" placeholder="사용자 이메일">
+  </div>
+
+  <div class="form-group">
+    <label for="query">질문:</label>
+    <textarea id="query" placeholder="무엇을 묻고 싶으신가요?">프론트엔드 코딩 테스트 기획 내용을 알려줘</textarea>
+  </div>
+
+  <button id="sendBtn" onclick="sendQuery()">전송</button>
+
+  <div id="response" class="response" style="display:none;"></div>
+</div>
+
+<script>
+  async function sendQuery() {
+    const userId = document.getElementById('userId').value;
+    const query = document.getElementById('query').value;
+    const responseDiv = document.getElementById('response');
+    const sendBtn = document.getElementById('sendBtn');
+
+    if (!query.trim()) {
+      alert('질문을 입력해주세요');
+      return;
+    }
+
+    // UI 업데이트
+    responseDiv.style.display = 'block';
+    responseDiv.innerHTML = '<span class="loading">⏳ 응답 중...</span>';
+    responseDiv.className = 'response';
+    sendBtn.disabled = true;
+
+    try {
+      const response = await fetch('http://localhost:8000/api/chat/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          query: query
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      // SSE 읽기
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      responseDiv.innerHTML = '';
+
+      let fullText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith(' ')) {
+            const data = line.slice(6);
+
+            if (data === '[DONE]') {
+              break;
+            }
+
+            fullText += data;
+            responseDiv.textContent = fullText;  // ← 변경 (innerHTML → textContent)
+            responseDiv.scrollTop = responseDiv.scrollHeight;
+          }
+        }
+      }
+
+    } catch (error) {
+      responseDiv.className = 'response error';
+      responseDiv.textContent = `❌ 오류: ${error.message}`;
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+
+  // 엔터키로 전송
+  document.getElementById('query').addEventListener('keypress', (e) => {
+    if (e.ctrlKey && e.key === 'Enter') {
+      sendQuery();
+    }
+  });
+</script>
+</body>
+</html>

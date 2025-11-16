@@ -54,11 +54,26 @@ class RAGService:
             return 0.0
 
         try:
-            # 문자열이면 JSON 파싱
+            # 문자열이면 파싱
             if isinstance(vec1, str):
-                vec1 = json.loads(vec1)
+                # 양쪽 대괄호 제거 후 쉼표로 분리
+                vec1_str = vec1.strip('[]').strip()
+                try:
+                    # 먼저 JSON 시도
+                    vec1 = json.loads(vec1)
+                except:
+                    # JSON 실패하면 쉼표로 분리
+                    vec1 = [float(x.strip()) for x in vec1_str.split(',') if x.strip()]
+
             if isinstance(vec2, str):
-                vec2 = json.loads(vec2)
+                # 양쪽 대괄호 제거 후 쉼표로 분리
+                vec2_str = vec2.strip('[]').strip()
+                try:
+                    # 먼저 JSON 시도
+                    vec2 = json.loads(vec2)
+                except:
+                    # JSON 실패하면 쉼표로 분리
+                    vec2 = [float(x.strip()) for x in vec2_str.split(',') if x.strip()]
 
             # numpy array로 변환
             v1 = np.array(vec1, dtype=np.float32)
@@ -85,7 +100,11 @@ class RAGService:
 
         except Exception as e:
             print(f"❌ 유사도 계산 오류: {e}")
+            import traceback
+            traceback.print_exc()
             return 0.0
+
+
 
     def generate_answer(self, query: str, context_chunks: List[Dict[str, Any]]) -> Tuple[str, Dict[str, int]]:
         """
@@ -174,6 +193,56 @@ class RAGService:
             "source_chunks": relevant_chunks,
             "usage": usage
         }
+
+    def process_query_streaming(self, user_id: str, query: str):
+        """
+        스트리밍 RAG 답변 생성 (일반 쿼리와 동일한 방식)
+
+        yield로 토큰을 하나씩 반환
+        """
+
+        # 1. 관련 청크 검색 (top_k=5로 통일)
+        relevant_chunks = self.search_relevant_chunks(query, top_k=5)
+
+        # 2. 컨텍스트 조합 (generate_answer와 동일)
+        context_text = "\n---\n".join([
+            f"출처: {chunk.get('content', '')[:100]}... (신뢰도: {chunk.get('similarity', 0):.2%})"
+            for chunk in relevant_chunks
+        ])
+
+        # 3. 프롬프트 (generate_answer와 동일)
+        system_prompt = """너는 베슬링크의 내부 AI 어시스턴트 '베디(VEDDY)'야.
+    너는 사내 문서 기반으로 정확한 답변을 제공하는 온순하고 성실한 챗봇이야.
+    
+    다음 규칙을 지켜:
+    1. 제공된 문서 기반으로만 답변해
+    2. 문서에 없는 내용은 "문서에서 해당 정보를 찾을 수 없습니다"라고 말해
+    3. 한국어로 친절하고 명확하게 답변해
+    4. 출처를 명시해
+    """
+
+        user_message = f"""다음 문서를 기반으로 질문에 답변해주세요.
+    
+    문서:
+    {context_text}
+    
+    질문: {query}
+    """
+
+        # 4. OpenAI 스트리밍 호출
+        with self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.7,
+                max_tokens=1000,
+                stream=True
+        ) as stream:
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
 
 # 글로벌 인스턴스
