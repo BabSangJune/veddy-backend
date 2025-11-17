@@ -16,25 +16,26 @@ class RAGService:
     def search_relevant_chunks(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         사용자 질문에서 관련 청크 검색
-
-        1. 질문을 벡터로 변환
-        2. Supabase에서 유사한 청크 검색
-        3. 메타데이터와 함께 반환
         """
         # 1. 질문 벡터화
         query_embedding = self.embedding_service.embed_text(query)
 
-        # 2. 벡터 유사도 검색 (Supabase RPC 사용)
-        # Note: RPC 함수는 별도로 Supabase에서 설정 필요
-        # 여기서는 기본 select로 대체
-        response = self.supabase_service.client.table("document_chunks") \
-            .select("*") \
-            .limit(top_k * 2) \
-            .execute()
+        # 2. 모든 청크 한 번에 가져오기 (페이지네이션 없음!)
+        try:
+            response = self.supabase_service.client.table("document_chunks") \
+                .select("*") \
+                .execute()
 
-        # 3. 벡터 유사도 계산 (간단한 코사인 유사도)
+            chunks_list = response.data
+            print(f"📚 총 {len(chunks_list)}개 청크 로드됨 (1회)")
+
+        except Exception as e:
+            print(f"❌ 청크 로드 오류: {e}")
+            chunks_list = []
+
+        # 3. 벡터 유사도 계산
         chunks_with_similarity = []
-        for chunk in response.data:
+        for chunk in chunks_list:
             similarity = self._cosine_similarity(query_embedding, chunk.get("embedding", []))
             chunks_with_similarity.append({
                 **chunk,
@@ -42,7 +43,14 @@ class RAGService:
             })
 
         # 상위 top_k개 반환
-        return sorted(chunks_with_similarity, key=lambda x: x["similarity"], reverse=True)[:top_k]
+        sorted_chunks = sorted(chunks_with_similarity, key=lambda x: x["similarity"], reverse=True)
+
+        print(f"🔍 상위 {top_k}개 청크:")
+        for i, chunk in enumerate(sorted_chunks[:top_k], 1):
+            print(f"   {i}. 유사도: {chunk['similarity']:.4f}")
+
+        return sorted_chunks[:top_k]
+
 
     def _cosine_similarity(self, vec1, vec2) -> float:
         """코사인 유사도 계산"""

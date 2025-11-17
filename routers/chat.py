@@ -1,23 +1,28 @@
+# routers/chat.py
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict, Any, AsyncGenerator
 from datetime import datetime
 from pydantic import BaseModel
+
+# ===== 상대 임포트 → 절대 임포트로 변경 =====
+from model.schemas import ChatRequest, ChatResponse  # ← 수정
+from services.rag_service import rag_service  # ← 수정
 import asyncio
 
 # ===== 모델 정의 =====
-class ChatRequest(BaseModel):
-    """채팅 요청"""
-    user_id: str
-    query: str
-
-
-class ChatResponse(BaseModel):
-    """채팅 응답"""
-    user_query: str
-    ai_response: str
-    source_chunks: List[Dict[str, Any]]
-    usage: Dict[str, int]
+# class ChatRequest(BaseModel):
+#     """채팅 요청"""
+#     user_id: str
+#     query: str
+#
+#
+# class ChatResponse(BaseModel):
+#     """채팅 응답"""
+#     user_query: str
+#     ai_response: str
+#     source_chunks: List[Dict[str, Any]]
+#     usage: Dict[str, int]
 
 
 # ===== 서비스 import =====
