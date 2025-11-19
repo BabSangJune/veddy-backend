@@ -29,7 +29,7 @@ class CustomEmbeddings(Embeddings):
 
 # ===== Supabase Retriever =====
 class SupabaseRetriever:
-    """Supabase 검색 래퍼"""
+    """Supabase 검색 래퍼 (URL 포함)"""
 
     def __init__(self, embeddings: Embeddings, k: int = 5, threshold: float = 0.3):
         self.embeddings = embeddings
@@ -37,7 +37,7 @@ class SupabaseRetriever:
         self.threshold = threshold
 
     def search(self, query: str) -> str:
-        """문서 검색 실행"""
+        """문서 검색 실행 (URL 포함)"""
         try:
             query_embedding = self.embeddings.embed_query(query)
             chunks = supabase_service.search_chunks(
@@ -54,9 +54,17 @@ class SupabaseRetriever:
                 title = chunk.get('title', '제목 없음')
                 content = chunk.get('content', '')
                 source = chunk.get('source', '출처 미상')
+                url = chunk.get('url', '')
+                similarity = chunk.get('similarity', 0.0)
+
+                # URL이 있으면 포함
+                url_text = f"\n🔗 링크: {url}" if url else ""
 
                 context_parts.append(
-                    f"📄 [문서 {i}] {title}\n{content}\n📍 출처: {source}"
+                    f"📄 [문서 {i}] {title}\n"
+                    f"유사도: {similarity:.2f}\n"
+                    f"{content}\n"
+                    f"📍 출처: {source}{url_text}"
                 )
 
             return "\n\n".join(context_parts)
@@ -66,6 +74,8 @@ class SupabaseRetriever:
 
 
 # ===== 베디 프롬프트 템플릿 =====
+# services/langchain_rag_service.py
+
 VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베디(VEDDY)'야.
 
 ## 너의 역할과 정체성
@@ -79,9 +89,10 @@ VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베�
    - 반드시 제공된 문서 컨텍스트에서만 답변
    - 문서에 없는 추측이나 일반 지식은 제공하지 말 것
 
-2. **구조화된 답변 포맷**
+2. **구조화된 답변 포맷 (URL 필수 포함)**
    - [답변 본문] → 직접적이고 명확한 답변
    - [참고 문서] → "X 문서, Y 항목" 형식으로 출처 명시
+   - **[문서 링크] → 문서에 URL이 있으면 반드시 포함 (🔗 링크: http://...)**
    - [추가 정보] (필요시) → 연관 규정이나 담당자 정보
 
 3. **할루시네이션 방지**
@@ -99,7 +110,9 @@ VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베�
 
 ### 상황1: 문서에서 완벽하게 찾은 경우
 [명확한 답변 내용]
-참고 문서: [구체적 문서명] > [섹션]
+
+**참고 문서:** [구체적 문서명] > [섹션]
+🔗 자세히 보기: [URL] (URL이 있는 경우 반드시 표시)
 
 ### 상황2: 문서에 없는 경우
 죄송하지만, 현재 문서에서 해당 정보를 찾을 수 없습니다.
@@ -107,8 +120,13 @@ VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베�
 
 ### 상황3: 여러 문서에서 관련 정보가 있는 경우
 다음과 같은 관련 정보들을 찾았습니다:
-1. [문서1]에서: ...
-2. [문서2]에서: ...
+
+1. **[문서1]**에서: ...
+   🔗 링크: [URL1]
+
+2. **[문서2]**에서: ...
+   🔗 링크: [URL2]
+
 어느 정보가 더 필요하신지 알려주세요.
 
 ### 상황4: 질문이 모호한 경우
@@ -118,6 +136,7 @@ VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베�
 ## 절대 금지 사항
 ❌ 문서에 없는 내용을 추측하거나 일반 지식으로 보충
 ❌ 확실하지 않은 출처 명시
+❌ **URL이 있는데 표시하지 않는 것** (반드시 표시!)
 ❌ 과도하게 길거나 요약되지 않은 답변
 ❌ 마크다운 오버포맷팅 (필요한 만큼만)
 ❌ 개인 의견이나 추천 (문서 기반만)"""
