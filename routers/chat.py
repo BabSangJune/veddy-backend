@@ -59,32 +59,32 @@ async def chat_query(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """
     RAG 챗봇 스트리밍 응답 엔드포인트
-
-    SSE (Server-Sent Events)로 토큰을 실시간으로 전송
     """
 
     async def generate_stream():
         try:
-            # 동기 함수를 async에서 실행
+            # 스트리밍 토큰 생성
             for token in rag_service.process_query_streaming(
                     user_id=request.user_id,
                     query=request.query
             ):
-                # SSE 형식으로 전송
-                yield f" {token}\n\n"
-                await asyncio.sleep(0.01)  # 약간의 딜레이 (UI 부드러움)
+                # ✅ "data: " 접두사 추가
+                yield f"data: {token}\n\n"
+                await asyncio.sleep(0.01)
 
-            # 스트림 종료
-            yield " [DONE]\n\n"
+            # 스트림 종료 신호
+            yield "data: [DONE]\n\n"
 
         except Exception as e:
-            yield f" ERROR: {str(e)}\n\n"
+            yield f"data: ERROR: {str(e)}\n\n"
 
     return StreamingResponse(
         generate_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         }
     )
+
