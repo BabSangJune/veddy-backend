@@ -1,15 +1,15 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
 class DocumentCreate(BaseModel):
     """문서 생성 요청"""
-    source: str  # 'confluence', 'notion', 'manual'
-    source_id: str
-    title: str
+    source: str = Field(..., description="출처 (confluence, notion, manual)")
+    source_id: str = Field(..., description="외부 ID")
+    title: str = Field(..., min_length=1)
     content: str
-    metadata: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
 
 
 class Document(DocumentCreate):
@@ -36,16 +36,15 @@ class Chunk(ChunkCreate):
 
 class ChatRequest(BaseModel):
     """채팅 요청"""
-    user_id: str
-    query: str
-
+    user_id: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1, max_length=1000)
 
 class ChatResponse(BaseModel):
     """채팅 응답"""
     user_query: str
     ai_response: str
-    source_chunks: List[Dict[str, Any]]  # 참고한 청크들
-    usage: Dict[str, int]  # token 사용량
+    source_chunks: List[Dict[str, Any]] = Field(default_factory=list)
+    usage: Dict[str, int] = Field(default_factory=dict)
 
 
 class MessageCreate(BaseModel):

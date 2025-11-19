@@ -1,17 +1,22 @@
 import sys
 import os
+import logging
 
-# 프로젝트 루트 경로 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware  # ← 추가
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from config import SERVER_HOST, SERVER_PORT
 from services.embedding_service import embedding_service
 from services.supabase_service import supabase_service
+
+# ===== 이 부분 추가! =====
+from services.langchain_rag_service import langchain_rag_service
+
 from routers import chat
+
 
 # 앱 시작/종료 이벤트
 @asynccontextmanager

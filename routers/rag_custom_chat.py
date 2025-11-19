@@ -3,32 +3,31 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 from model.schemas import ChatRequest, ChatResponse
-
-# ===== 이 부분만 수정! =====
-# from services.rag_service import rag_service  # ← 기존 코드 (주석 처리)
-from services.langchain_rag_service import langchain_rag_service  # ← 새로 추가
-
+from services.rag_custom_service import rag_service
 import asyncio
 import logging
 
+# 로거 설정
 logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 @router.post("/query", response_model=ChatResponse)
 async def chat_query(request: ChatRequest):
-    """RAG 챗봇 쿼리 (LangChain 사용)"""
+    """
+    RAG 챗봇 쿼리 엔드포인트 (일반 응답)
+    """
     try:
         logger.info(f"📩 쿼리 수신: user_id={request.user_id}, query={request.query[:50]}...")
 
-        # ===== 이 부분만 수정! =====
-        # result = rag_service.process_query(...)  # ← 기존
-        result = langchain_rag_service.process_query(  # ← 새로운 코드
+        # RAG 파이프라인 실행
+        result = rag_service.process_query(
             user_id=request.user_id,
             query=request.query
         )
 
-        logger.info(f"✅ 쿼리 처리 완료")
+        logger.info(f"✅ 쿼리 처리 완료: tokens={result['usage']['total_tokens']}")
 
         return ChatResponse(
             user_query=result["user_query"],
@@ -44,20 +43,22 @@ async def chat_query(request: ChatRequest):
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest):
-    """RAG 챗봇 스트리밍 (LangChain 사용)"""
+    """
+    RAG 챗봇 스트리밍 응답 엔드포인트
+    """
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             logger.info(f"🌊 스트리밍 시작: user_id={request.user_id}, query={request.query[:50]}...")
 
-            # ===== 이 부분만 수정! =====
-            # for token in rag_service.process_query_streaming(...):  # ← 기존
-            for token in langchain_rag_service.process_query_streaming(  # ← 새로운 코드
+            # 스트리밍 토큰 생성
+            for token in rag_service.process_query_streaming(
                     user_id=request.user_id,
                     query=request.query
             ):
                 yield f" {token}\n\n"
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.01)  # 너무 빠른 전송 방지
 
+            # 스트림 종료 신호
             yield " [DONE]\n\n"
             logger.info("✅ 스트리밍 완료")
 
@@ -74,3 +75,6 @@ async def chat_stream(request: ChatRequest):
             "Connection": "keep-alive",
         }
     )
+
+# ❌ 이 부분 삭제! (순환 import 원인)
+# app.include_router(chat.router)

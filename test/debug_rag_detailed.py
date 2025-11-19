@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from services.rag_service import rag_service
+from services.rag_custom_service import rag_service
 from services.embedding_service import embedding_service
 import numpy as np
 
