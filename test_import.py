@@ -1,16 +1,18 @@
-# test_import.py
-
+# test_supabase.py
 from services.supabase_service import supabase_service
+from unicodedata import normalize as unicode_normalize
 
-# add_chunk 메서드 확인
-print("✅ supabase_service 인스턴스:", supabase_service)
-print("✅ add_chunk 메서드 존재 여부:", hasattr(supabase_service, 'add_chunk'))
+# 저장된 데이터 확인
+chunks = supabase_service.client.table('document_chunks').select('content').limit(1).execute()
 
-if hasattr(supabase_service, 'add_chunk'):
-    print("✅ add_chunk 메서드 발견!")
-else:
-    print("❌ add_chunk 메서드 없음!")
-    print("\n사용 가능한 메서드:")
-    for attr in dir(supabase_service):
-        if not attr.startswith('_'):
-            print(f"  - {attr}")
+if chunks:
+    original = chunks.data[0]['content']
+    normalized = unicode_normalize('NFC', original)
+
+    print(f"원본: {repr(original[:100])}")
+    print(f"정규화: {repr(normalized[:100])}")
+
+    if original == normalized:
+        print("✅ 데이터 정상")
+    else:
+        print("❌ 데이터 손상 - 재로드 필요")

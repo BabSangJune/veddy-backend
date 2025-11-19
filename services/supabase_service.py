@@ -3,7 +3,10 @@
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
 from config import SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY
+from unicodedata import normalize as unicode_normalize
+import logging
 
+logger = logging.getLogger(__name__)
 
 class SupabaseService:
     def __init__(self, use_service_role: bool = False):
@@ -14,25 +17,35 @@ class SupabaseService:
 
     # ==================== documents ====================
 
-    def add_document(self, source: str, source_id: str, title: str,
-                     content: str, metadata: Optional[Dict] = None) -> Dict[str, Any]:
-
-        data = {
-            "source": source,
-            "source_id": source_id,
-            "title": title,
-            "content": content,
-            "metadata": metadata or {},
-            "is_active": True
-        }
+    def add_document(self, source: str, source_id: str, title: str, content: str, metadata: Dict) -> Dict:
+        """
+        문서 저장 (✅ 정규화 추가)
+        """
         try:
-            response = self.client.table("documents").upsert(
-                data, on_conflict="source_id"
-            ).execute()
-            return response.data[0] if response.data else {}
+            # ✅ 저장 전 유니코드 정규화 (NFC)
+            normalized_title = unicode_normalize('NFC', title)
+            normalized_content = unicode_normalize('NFC', content)
+
+            doc_data = {
+                "source": source,
+                "source_id": source_id,
+                "title": normalized_title,
+                "content": normalized_content,
+                "metadata": metadata
+            }
+
+            response = self.client.table("documents").insert(doc_data).execute()
+
+            if response:
+                logger.info(f"✅ 문서 저장: {normalized_title}")
+                return response.data[0]
+            else:
+                logger.error(f"❌ 문서 저장 실패")
+                return {}
+
         except Exception as e:
-            print(f"❌ 문서 추가 실패: {e}")
-            return {}
+            logger.error(f"❌ 문서 저장 중 오류: {e}")
+            raise
 
     def list_documents(self, limit: int = 50) -> List[Dict[str, Any]]:
         """문서 목록"""
@@ -47,21 +60,32 @@ class SupabaseService:
 
     # ==================== chunks ====================
 
-    def add_chunk(self, document_id: str, chunk_number: int,
-                  content: str, embedding: List[float]) -> Dict[str, Any]:
-        """청크 추가"""
-        data = {
-            "document_id": document_id,
-            "chunk_number": chunk_number,
-            "content": content,
-            "embedding": embedding
-        }
+    def add_chunk(self, document_id: str, chunk_number: int, content: str, embedding: List[float]) -> Dict:
+        """
+        문서 청크 저장 (✅ 정규화 추가)
+        """
         try:
-            response = self.client.table("document_chunks").insert(data).execute()
-            return response.data[0] if response.data else {}
+            # ✅ 저장 전 유니코드 정규화 (NFC)
+            normalized_content = unicode_normalize('NFC', content)
+
+            chunk_data = {
+                "document_id": document_id,
+                "chunk_number": chunk_number,
+                "content": normalized_content,
+                "embedding": embedding
+            }
+
+            response = self.client.table("document_chunks").insert(chunk_data).execute()
+
+            if response:
+                return response.data[0]
+            else:
+                logger.error(f"❌ 청크 저장 실패")
+                return {}
+
         except Exception as e:
-            print(f"❌ 청크 추가 실패: {e}")
-            return {}
+            logger.error(f"❌ 청크 저장 중 오류: {e}")
+            raise
 
 
     # services/supabase_service.py
