@@ -8,6 +8,7 @@ from services.langchain_rag_service import langchain_rag_service
 import asyncio
 import logging
 import re
+import json
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest):
-    """RAG 챗봇 스트리밍 (✅ 줄바꿈 강제 삽입)"""
+    """RAG 챗봇 스트리밍 (✅ 표준 SSE 형식)"""
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
@@ -32,38 +33,38 @@ async def chat_stream(request: ChatRequest):
 
             logger.info(f"✅ 토큰 수집 완료 (길이: {len(full_response)})")
 
-            # 2. ✅ 강제로 줄바꿈 삽입 (핵심!)
-            # 패턴: 번호 뒤에 줄바꿈 추가
+            # 2. 정규화
             formatted = re.sub(r'(\d+\.)\s+', r'\1\n\n', full_response)
-
-            # 3. 헤더(##) 뒤에 줄바꿈 추가
             formatted = re.sub(r'(#{1,3})\s+([^\n]+)', r'\1 \2\n\n', formatted)
-
-            # 4. 리스트 항목(-) 뒤에 줄바꿈 추가
             formatted = re.sub(r'(-\s+[^\n]+)', r'\1\n', formatted)
 
-            # 5. 참고 문서 섹션 추가
             if '참고 문서' not in formatted:
                 formatted += '\n\n📚 참고 문서:\n'
 
-            # 6. 과도한 공백 정리
             formatted = re.sub(r'\n{4,}', '\n\n', formatted)
 
-            logger.info(f"✅ 정규화 완료")
+            # 3. ✅ 표준 SSE 형식으로 전송 ( 접두사!)
+            for i, char in enumerate(formatted):
+                data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
+                output = f" {data}\n\n"  # ✅ " "로 수정!
 
-            # 7. ✅ 정규화된 텍스트를 문자 단위로 전송
-            for char in formatted:
-                yield f" {char}\n\n"
-                await asyncio.sleep(0.0001)
+                # 디버깅 (처음 3개)
+                if i < 3:
+                    logger.info(f"전송 [{i}]: {repr(output)}")
 
-            yield f" [DONE]\n\n"
+                yield output
+                await asyncio.sleep(0.001)
+
+            # 4. 완료 신호
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"  # ✅ " "로 수정!
             logger.info(f"✅ 스트리밍 완료")
 
         except Exception as e:
-            logger.error(f"❌ 스트리밍 중 오류: {str(e)}")
+            logger.error(f"❌ 오류: {str(e)}")
             import traceback
             traceback.print_exc()
-            yield f" [ERROR] {str(e)}\n\n"
+
+            yield f" {json.dumps({'type': 'error', 'error': str(e)})}\n\n"  # ✅ " "로 수정!
 
     return StreamingResponse(
         generate_stream(),
