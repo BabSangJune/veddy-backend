@@ -43,20 +43,16 @@ async def chat_stream(request: ChatRequest):
 
             formatted = re.sub(r'\n{4,}', '\n\n', formatted)
 
-            # 3. ✅ 표준 SSE 형식으로 전송 ( 접두사!)
+            # 3. 토큰 전송
             for i, char in enumerate(formatted):
                 data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
-                output = f" {data}\n\n"  # ✅ " "로 수정!
-
-                # 디버깅 (처음 3개)
-                if i < 3:
-                    logger.info(f"전송 [{i}]: {repr(output)}")
-
+                output = f" {data}\n\n"  # ← 공백으로 시작
                 yield output
                 await asyncio.sleep(0.001)
 
-            # 4. 완료 신호
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"  # ✅ " "로 수정!
+            # 4. 완료 신호 (✅ 같은 형식으로!)
+            yield f" {json.dumps({'type': 'done'})}\n\n"  # ← 공백으로 시작 (통일)
+
             logger.info(f"✅ 스트리밍 완료")
 
         except Exception as e:
