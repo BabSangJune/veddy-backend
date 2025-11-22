@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 from model.schemas import ChatRequest, ChatResponse
-from services.rag_custom_service import rag_service
+from backup.rag_custom_service import rag_service
 import asyncio
 import logging
 

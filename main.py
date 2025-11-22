@@ -11,11 +11,10 @@ from contextlib import asynccontextmanager
 from config import SERVER_HOST, SERVER_PORT
 from services.embedding_service import embedding_service
 from services.supabase_service import supabase_service
-
-# ===== 이 부분 추가! =====
 from services.langchain_rag_service import langchain_rag_service
 
 from routers import chat
+from routers import teams_router  # 🆕 Teams 라우터 추가
 
 
 # 앱 시작/종료 이벤트
@@ -23,6 +22,8 @@ from routers import chat
 async def lifespan(app: FastAPI):
     print("=" * 50)
     print("🚀 베디(VEDDY) 백엔드 서버 시작!")
+    print("   - 웹 챗봇 API 활성화")
+    print("   - Teams 봇 활성화 🆕")  # 🆕
     print("=" * 50)
     yield
     print("🛑 베디 서버 종료!")
@@ -31,22 +32,23 @@ async def lifespan(app: FastAPI):
 # FastAPI 앱 생성
 app = FastAPI(
     title="VEDDY - Vessellink 내부 AI 챗봇",
-    description="Confluence 기반 RAG 챗봇 API",
-    version="0.1.0",
+    description="Confluence 기반 RAG 챗봇 API + Teams 봇",  # 🆕 수정
+    version="0.2.0",  # 🆕 버전 업
     lifespan=lifespan
 )
 
-# ===== CORS 설정 추가 (필수!) =====
+# CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 모든 출처 허용 (개발용, 프로덕션에서는 제한)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # GET, POST, PUT, DELETE 등 모두 허용
-    allow_headers=["*"],  # 모든 헤더 허용
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 라우터 등록
 app.include_router(chat.router)
+app.include_router(teams_router.router)  # 🆕 Teams 라우터 등록
 
 
 # ==================== 기본 헬스 체크 ====================
@@ -56,7 +58,8 @@ async def health_check():
     """서버 상태 확인"""
     return {
         "status": "healthy",
-        "message": "베디가 준비되었습니다! 🎉"
+        "message": "베디가 준비되었습니다! 🎉",
+        "teams_enabled": True  # 🆕
     }
 
 
@@ -97,11 +100,29 @@ async def test_supabase():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# 🆕 Teams 테스트 엔드포인트
+@app.get("/api/test/teams")
+async def test_teams():
+    """테스트: Teams 봇 설정 확인"""
+    try:
+        from services.teams_service import teams_service
+
+        return {
+            "status": "configured",
+            "message": "Teams 봇이 설정되었습니다!",
+            "app_id": teams_service.app_id[:8] + "...",
+            "endpoint": "/api/teams/messages"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== 에러 핸들링 ====================
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     """전역 예외 처리"""
+    logging.error(f"Global exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
         content={
