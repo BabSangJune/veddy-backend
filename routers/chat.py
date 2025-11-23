@@ -11,22 +11,26 @@ import re
 import json
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest):
-    """RAG 챗봇 스트리밍 (✅ 표준 SSE 형식)"""
+    """RAG 챗봇 스트리밍 (✅ 표준 SSE 형식 + 🆕 표 모드 지원)"""
+    print(f"[chat.py] table_mode: {request.table_mode}")
+    print(f"[chat.py] query: {request.query}")
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             logger.info(f"🌊 스트리밍 시작: {request.query[:50]}...")
+            logger.info(f"📊 표 모드: {'활성화' if request.table_mode else '비활성화'}")  # 🆕 로그 추가
 
-            # 1. 모든 토큰 수집
+            # 🆕 1. 모든 토큰 수집 (table_mode 전달)
             full_response = ""
             for token in langchain_rag_service.process_query_streaming(
                     user_id=request.user_id,
-                    query=request.query
+                    query=request.query,
+                    table_mode=request.table_mode  # 🆕 표 모드 전달
             ):
                 if token:
                     full_response += token
@@ -46,21 +50,19 @@ async def chat_stream(request: ChatRequest):
             # 3. 토큰 전송
             for i, char in enumerate(formatted):
                 data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
-                output = f" {data}\n\n"  # ← 공백으로 시작
+                output = f" {data}\n\n"
                 yield output
                 await asyncio.sleep(0.001)
 
-            # 4. 완료 신호 (✅ 같은 형식으로!)
-            yield f" {json.dumps({'type': 'done'})}\n\n"  # ← 공백으로 시작 (통일)
-
+            # 4. 완료 신호
+            yield f" {json.dumps({'type': 'done'})}\n\n"
             logger.info(f"✅ 스트리밍 완료")
 
         except Exception as e:
             logger.error(f"❌ 오류: {str(e)}")
             import traceback
             traceback.print_exc()
-
-            yield f" {json.dumps({'type': 'error', 'error': str(e)})}\n\n"  # ✅ " "로 수정!
+            yield f" {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return StreamingResponse(
         generate_stream(),
