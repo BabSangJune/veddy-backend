@@ -1,9 +1,14 @@
+# backend/routers/teams_router.py
+
 from fastapi import APIRouter, Request, HTTPException
 from botbuilder.schema import Activity, ActivityTypes
 import logging
 from services.langchain_rag_service import langchain_rag_service
-from services.supabase_service import SupabaseService, supabase_service
+from services.supabase_service import supabase_service
 from services.teams_service import teams_service
+from services.microsoft_graph_service import microsoft_graph_service
+from auth.user_service import user_service
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +16,7 @@ router = APIRouter(prefix="/api/teams", tags=["teams"])
 
 @router.post("/messages")
 async def handle_teams_message(request: Request):
-    """Teams 봇 메시지 핸들러 (Teams 자체 인증 사용)"""
+    """Teams 봇 메시지 핸들러 (Microsoft Graph로 사용자 정보 조회)"""
     activity = None
 
     try:
@@ -20,7 +25,6 @@ async def handle_teams_message(request: Request):
 
         logger.info(f"Received {activity.type}")
 
-        # Activity 타입 확인
         if activity.type != ActivityTypes.message:
             return {"status": "ok"}
 
@@ -34,22 +38,64 @@ async def handle_teams_message(request: Request):
         table_keywords = ["테이블", "표", "데이터", "통계"]
         table_mode = any(keyword in user_message for keyword in table_keywords)
 
-        if table_mode:
-            logger.info(f"Step 1.5: 테이블 모드 활성화")
-
-        # Step 1: Teams 사용자 ID 추출
+        # ✅ Teams 사용자 정보 추출
         teams_user_id = activity.from_property.id if activity.from_property else "teams-user"
         user_id = f"teams_{teams_user_id}"
+        user_name = activity.from_property.name if activity.from_property else "Unknown"
 
-        logger.info(f"RAG processing for teams_user_id: {teams_user_id}")
+        logger.info(f"Teams user: {user_name} ({teams_user_id})")
 
-        # Step 2: Service Role 클라이언트 사용
+        # ✅ aad_object_id 추출 (from_property에서!)
+        azure_ad_object_id = None
+        if activity.from_property and hasattr(activity.from_property, 'aad_object_id'):
+            azure_ad_object_id = activity.from_property.aad_object_id
+            logger.info(f"✅ aad_object_id found: {azure_ad_object_id}")
+
+        # Graph API 호출용 ID 결정
+        graph_user_id = azure_ad_object_id or teams_user_id
+        logger.info(f"Graph user_id to use: {graph_user_id}")
+
+        # ✅ Microsoft Graph API로 이메일, 부서 등 조회
+        user_email = None
+        department = None
+        job_title = None
+
+        try:
+            graph_user_info = await microsoft_graph_service.get_user_by_id(graph_user_id)
+            if graph_user_info:
+                user_email = graph_user_info.get("email")
+                department = graph_user_info.get("department")
+                job_title = graph_user_info.get("jobTitle")
+                user_name = graph_user_info.get("displayName") or user_name
+                logger.info(f"✅ Graph API 조회 성공: {user_email} / 부서: {department}")
+        except Exception as e:
+            logger.warning(f"⚠️ Graph API 조회 실패 (이메일 없이 진행): {str(e)}")
+
+        # Tenant ID 추출
+        teams_tenant_id = activity.channel_data.get("tenant", {}).get("id") if activity.channel_data else None
+
+        # ✅ 사용자 정보 저장 (users 테이블)
+        user_fk = await user_service.get_or_create_user(
+            user_id=user_id,
+            name=user_name,
+            email=user_email,
+            department=department,
+            auth_type="teams",
+            teams_tenant_id=teams_tenant_id,
+            metadata={
+                "teams_user_id": teams_user_id,
+                "azure_ad_object_id": azure_ad_object_id,
+                "job_title": job_title,
+                "channel_id": activity.channel_id if activity else None
+            }
+        )
+        logger.info(f"user_fk: {user_fk}")
+
+        # RAG 처리
         admin_supabase = supabase_service
 
-        # Step 3: 타이핑 표시
         await teams_service.send_typing_indicator(activity)
 
-        # Step 4: RAG 처리
         rag_result = langchain_rag_service.process_query(
             user_id=user_id,
             query=user_message,
@@ -60,9 +106,23 @@ async def handle_teams_message(request: Request):
         answer = rag_result.get("ai_response", "")
         logger.info(f"RAG complete: {len(answer)} chars")
 
-        # Step 5: Teams에 응답 전송
+        # ✅ 메시지 저장
         if answer:
-            success = await teams_service.send_reply(activity, answer)  # ✅ send_reply_activity → send_reply
+            try:
+                admin_supabase.client.table("messages").insert({
+                    "user_id": user_id,
+                    "user_fk": user_fk,
+                    "user_query": user_message,
+                    "ai_response": answer,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+                logger.info(f"✅ Teams 메시지 저장 완료")
+            except Exception as e:
+                logger.error(f"⚠️ 메시지 저장 실패: {str(e)}")
+
+        # Teams에 응답 전송
+        if answer:
+            success = await teams_service.send_reply(activity, answer)
             return {
                 "status": "success",
                 "query": user_message,
@@ -75,11 +135,10 @@ async def handle_teams_message(request: Request):
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
 
-        # Step 6: 에러 메시지 전송
         if activity:
             try:
                 error_msg = f"죄송합니다. 처리 중 오류가 발생했습니다.\n오류: {str(e)}"
-                await teams_service.send_reply(activity, error_msg)  # ✅ send_reply_activity → send_reply
+                await teams_service.send_reply(activity, error_msg)
             except:
                 pass
 

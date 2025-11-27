@@ -1,14 +1,18 @@
+# backend/routers/chat_router.py (기존 코드에서 수정)
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 from model.schemas import ChatRequest
 from services.langchain_rag_service import langchain_rag_service
-from services.supabase_service import SupabaseService  # ✅ 추가
+from services.supabase_service import SupabaseService
 from auth.auth_service import verify_supabase_token
+from auth.user_service import user_service  # ✅ 추가
 import asyncio
 import logging
 import re
 import json
+from datetime import datetime  # ✅ 추가
 
 logger = logging.getLogger(__name__)
 
@@ -19,37 +23,51 @@ async def chat_stream(
         request: ChatRequest,
         user: dict = Depends(verify_supabase_token)
 ):
-    """RAG 챗봇 스트리밍 (✅ 표준 SSE 형식 + 🆕 표 모드 지원 + 🔐 인증 필수)"""
     user_id = user["user_id"]
-    access_token = user["access_token"]  # ✅ 토큰 추출
+    email = user.get("email")
+    name = user.get("name")  # ✅ 이름 받기
+    access_token = user["access_token"]
 
-    logger.info(f"[chat.py] table_mode: {request.table_mode}")
-    logger.info(f"[chat.py] query: {request.query}")
     logger.info(f"[chat.py] user_id: {user_id}")
 
-    # ✅ 사용자별 Supabase 클라이언트 생성 (RLS 적용됨)
+    # ✅ 이름(name) 정보도 함께 저장/업데이트
+    user_fk = await user_service.get_or_create_user(
+        user_id=user_id,
+        email=email,
+        name=name,  # ✅ 이름 전달
+        auth_type="general"
+    )
+
+    # ✅ 사용자 정보 저장 (users 테이블)
+    user_fk = await user_service.get_or_create_user(
+        user_id=user_id,
+        email=email,
+        auth_type="general"  # 일반 인증
+    )
+    logger.info(f"[chat.py] user_fk: {user_fk}")
+
+    # ✅ 사용자별 Supabase 클라이언트
     user_supabase = SupabaseService(access_token=access_token)
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             logger.info(f"🌊 스트리밍 시작: {request.query[:50]}...")
-            logger.info(f"📊 표 모드: {'활성화' if request.table_mode else '비활성화'}")
             logger.info(f"👤 사용자: {user_id}")
 
-            # ✅ 모든 토큰 수집 (사용자 클라이언트 전달)
+            # RAG 처리
             full_response = ""
             for token in langchain_rag_service.process_query_streaming(
                     user_id=user_id,
                     query=request.query,
                     table_mode=request.table_mode,
-                    supabase_client=user_supabase  # ✅ 사용자 클라이언트 전달
+                    supabase_client=user_supabase
             ):
                 if token:
                     full_response += token
 
-            logger.info(f"✅ 토큰 수집 완료 (길이: {len(full_response)})")
+            logger.info(f"✅ 토큰 수집 완료")
 
-            # 2. 정규화
+            # 포맷팅
             formatted = re.sub(r'(\d+\.)\s+', r'\1\n\n', full_response)
             formatted = re.sub(r'(#{1,3})\s+([^\n]+)', r'\1 \2\n\n', formatted)
             formatted = re.sub(r'(-\s+[^\n]+)', r'\1\n', formatted)
@@ -59,14 +77,28 @@ async def chat_stream(
 
             formatted = re.sub(r'\n{4,}', '\n\n', formatted)
 
-            # 3. 토큰 전송
+            # ✅ 메시지 저장 (user_fk 포함)
+            try:
+                user_supabase.client.table("messages").insert({
+                    "user_id": user_id,  # 백업용
+                    "user_fk": user_fk,  # ✅ 추가
+                    "user_query": request.query,
+                    "ai_response": formatted,
+                    "created_at": datetime.utcnow().isoformat()
+                }).execute()
+                logger.info(f"✅ 메시지 저장 완료")
+            except Exception as e:
+                logger.error(f"⚠️ 메시지 저장 실패: {str(e)}")
+                # 저장 실패해도 응답은 전송
+
+            # 토큰 전송
             for i, char in enumerate(formatted):
                 data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
                 output = f"data: {data}\n\n"
                 yield output
                 await asyncio.sleep(0.001)
 
-            # 4. 완료 신호
+            # 완료 신호
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             logger.info(f"✅ 스트리밍 완료")
 
