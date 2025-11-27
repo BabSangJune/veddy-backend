@@ -13,7 +13,7 @@ from services.embedding_service import embedding_service
 from services.supabase_service import supabase_service
 from services.langchain_rag_service import langchain_rag_service
 
-from routers import chat
+from routers import chat_router
 from routers import teams_router  # 🆕 Teams 라우터 추가
 
 
@@ -47,7 +47,7 @@ app.add_middleware(
 )
 
 # 라우터 등록
-app.include_router(chat.router)
+app.include_router(chat_router.router)
 app.include_router(teams_router.router)  # 🆕 Teams 라우터 등록
 
 

@@ -1,4 +1,4 @@
-# routers/chat.py
+# routers/chat_router.py
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse

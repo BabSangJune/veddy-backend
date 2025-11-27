@@ -1,4 +1,4 @@
-# routers/chat.py
+# routers/chat_router.py
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
