@@ -1,4 +1,4 @@
-# backend/routers/chat_router.py (기존 코드에서 수정)
+# backend/routers/chat_router.py (수정)
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -6,13 +6,14 @@ from typing import AsyncGenerator
 from model.schemas import ChatRequest
 from services.langchain_rag_service import langchain_rag_service
 from services.supabase_service import SupabaseService
+from services.microsoft_graph_service import microsoft_graph_service  # ✅ 추가
 from auth.auth_service import verify_supabase_token
-from auth.user_service import user_service  # ✅ 추가
+from auth.user_service import user_service
 import asyncio
 import logging
 import re
 import json
-from datetime import datetime  # ✅ 추가
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -25,24 +26,18 @@ async def chat_stream(
 ):
     user_id = user["user_id"]
     email = user.get("email")
-    name = user.get("name")  # ✅ 이름 받기
+    name = user.get("name")
+    azure_oid = user.get("azure_oid")  # ✅ 추가
     access_token = user["access_token"]
 
-    logger.info(f"[chat.py] user_id: {user_id}")
-
-    # ✅ 이름(name) 정보도 함께 저장/업데이트
-    user_fk = await user_service.get_or_create_user(
-        user_id=user_id,
-        email=email,
-        name=name,  # ✅ 이름 전달
-        auth_type="general"
-    )
+    logger.info(f"[chat.py] user_id: {user_id}, email: {email}, name: {name}")
 
     # ✅ 사용자 정보 저장 (users 테이블)
     user_fk = await user_service.get_or_create_user(
         user_id=user_id,
         email=email,
-        auth_type="general"  # 일반 인증
+        name=name,
+        auth_type="general"
     )
     logger.info(f"[chat.py] user_fk: {user_fk}")
 
@@ -80,8 +75,8 @@ async def chat_stream(
             # ✅ 메시지 저장 (user_fk 포함)
             try:
                 user_supabase.client.table("messages").insert({
-                    "user_id": user_id,  # 백업용
-                    "user_fk": user_fk,  # ✅ 추가
+                    "user_id": user_id,
+                    "user_fk": user_fk,
                     "user_query": request.query,
                     "ai_response": formatted,
                     "created_at": datetime.utcnow().isoformat()
@@ -89,24 +84,23 @@ async def chat_stream(
                 logger.info(f"✅ 메시지 저장 완료")
             except Exception as e:
                 logger.error(f"⚠️ 메시지 저장 실패: {str(e)}")
-                # 저장 실패해도 응답은 전송
 
             # 토큰 전송
             for i, char in enumerate(formatted):
                 data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
-                output = f"data: {data}\n\n"
+                output = f" {data}\n\n"
                 yield output
                 await asyncio.sleep(0.001)
 
             # 완료 신호
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield f" {json.dumps({'type': 'done'})}\n\n"
             logger.info(f"✅ 스트리밍 완료")
 
         except Exception as e:
             logger.error(f"❌ 오류: {str(e)}")
             import traceback
             traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            yield f" {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return StreamingResponse(
         generate_stream(),
