@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 from model.schemas import ChatRequest
 from services.langchain_rag_service import langchain_rag_service
+from services.supabase_service import SupabaseService  # ✅ 추가
 from auth.auth_service import verify_supabase_token
 import asyncio
 import logging
@@ -20,23 +21,28 @@ async def chat_stream(
 ):
     """RAG 챗봇 스트리밍 (✅ 표준 SSE 형식 + 🆕 표 모드 지원 + 🔐 인증 필수)"""
     user_id = user["user_id"]
+    access_token = user["access_token"]  # ✅ 토큰 추출
 
-    print(f"[chat.py] table_mode: {request.table_mode}")
-    print(f"[chat.py] query: {request.query}")
-    print(f"[chat.py] user_id: {user_id}")  # 🆕 사용자 ID 로그
+    logger.info(f"[chat.py] table_mode: {request.table_mode}")
+    logger.info(f"[chat.py] query: {request.query}")
+    logger.info(f"[chat.py] user_id: {user_id}")
+
+    # ✅ 사용자별 Supabase 클라이언트 생성 (RLS 적용됨)
+    user_supabase = SupabaseService(access_token=access_token)
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             logger.info(f"🌊 스트리밍 시작: {request.query[:50]}...")
             logger.info(f"📊 표 모드: {'활성화' if request.table_mode else '비활성화'}")
-            logger.info(f"👤 사용자: {user_id}")  # 🆕 사용자 ID 로그
+            logger.info(f"👤 사용자: {user_id}")
 
-            # 🆕 1. 모든 토큰 수집 (table_mode 전달)
+            # ✅ 모든 토큰 수집 (사용자 클라이언트 전달)
             full_response = ""
             for token in langchain_rag_service.process_query_streaming(
-                    user_id=user_id,  # ✅ JWT 토큰에서 추출한 user_id 사용
+                    user_id=user_id,
                     query=request.query,
-                    table_mode=request.table_mode
+                    table_mode=request.table_mode,
+                    supabase_client=user_supabase  # ✅ 사용자 클라이언트 전달
             ):
                 if token:
                     full_response += token

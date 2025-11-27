@@ -28,7 +28,8 @@ async def verify_supabase_token(credentials = Depends(security)) -> dict:
 
         return {
             "user_id": user.user.id,
-            "email": user.user.email
+            "email": user.user.email,
+            "access_token": token  # ✅ 토큰 추가 (옵션 2에 필요)
         }
 
     except HTTPException:

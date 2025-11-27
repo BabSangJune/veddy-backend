@@ -9,11 +9,31 @@ import logging
 logger = logging.getLogger(__name__)
 
 class SupabaseService:
-    def __init__(self, use_service_role: bool = False):
-        """Supabase 클라이언트 초기화"""
-        key = SUPABASE_SERVICE_ROLE_KEY if use_service_role else SUPABASE_KEY
-        self.client: Client = create_client(SUPABASE_URL, key)
-        print("✅ Supabase 클라이언트 초기화 완료")
+    def __init__(self, access_token: Optional[str] = None):
+        """
+        Supabase 클라이언트 초기화
+
+        Args:
+            access_token: 사용자 JWT 토큰 (None이면 Service Role 사용)
+        """
+        if access_token:
+            # 🔐 사용자 토큰으로 클라이언트 생성 (RLS 적용됨)
+            self.client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+            self.client.postgrest.auth(access_token)
+            logger.info("✅ Supabase 사용자 클라이언트 초기화 (RLS 활성화)")
+        else:
+            # 🔑 Service Role 클라이언트 (관리자용, RLS 우회)
+            self.client: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            logger.info("✅ Supabase Service Role 클라이언트 초기화")
+
+    def test_connection(self) -> bool:
+        """Supabase 연결 테스트"""
+        try:
+            response = self.client.table("documents").select("id").limit(1).execute()
+            return True
+        except Exception as e:
+            logger.error(f"❌ 연결 테스트 실패: {e}")
+            return False
 
     # ==================== documents ====================
 
@@ -55,7 +75,7 @@ class SupabaseService:
             ).limit(limit).execute()
             return response.data
         except Exception as e:
-            print(f"❌ 목록 조회 실패: {e}")
+            logger.error(f"❌ 목록 조회 실패: {e}")
             return []
 
     # ==================== chunks ====================
@@ -87,9 +107,6 @@ class SupabaseService:
             logger.error(f"❌ 청크 저장 중 오류: {e}")
             raise
 
-
-    # services/supabase_service.py
-
     def search_chunks(self, embedding: List[float], limit: int = 5,
                       threshold: float = 0.2) -> List[Dict[str, Any]]:
         """
@@ -104,7 +121,7 @@ class SupabaseService:
             검색된 청크 목록
         """
         try:
-            print(f"🔍 검색 시작 (limit={limit}, threshold={threshold})")
+            logger.info(f"🔍 검색 시작 (limit={limit}, threshold={threshold})")
 
             # RPC 호출
             response = self.client.rpc('match_documents', {
@@ -117,10 +134,10 @@ class SupabaseService:
             data = response.data if hasattr(response, 'data') else response
 
             if not data:
-                print("⚠️ 검색 결과 없음")
+                logger.warning("⚠️ 검색 결과 없음")
                 return []
 
-            print(f"✅ RPC 응답: {len(data)}개")
+            logger.info(f"✅ RPC 응답: {len(data)}개")
 
             results = []
 
@@ -130,7 +147,7 @@ class SupabaseService:
                 content = item.get('content', '')
                 similarity = item.get('similarity', 0.0)
 
-                print(f"  [{i}] chunk_id={chunk_id}, doc_id={doc_id}, sim={similarity:.3f}")
+                logger.debug(f"  [{i}] chunk_id={chunk_id}, doc_id={doc_id}, sim={similarity:.3f}")
 
                 # 기본 청크 정보
                 chunk_data = {
@@ -151,7 +168,7 @@ class SupabaseService:
                             'id, title, source, metadata'
                         ).eq('id', doc_id).single().execute()
 
-                        if doc_response and doc_response:
+                        if doc_response and doc_response.data:
                             doc_data = doc_response.data
                             metadata = doc_data.get('metadata', {})
 
@@ -160,26 +177,25 @@ class SupabaseService:
                             chunk_data['url'] = metadata.get('url') or metadata.get('page_url', '')
                             chunk_data['metadata'] = metadata
 
-                            print(f"      ✅ 제목: {chunk_data['title']}")
+                            logger.debug(f"      ✅ 제목: {chunk_data['title']}")
                             if chunk_data['url']:
-                                print(f"      🔗 URL: {chunk_data['url']}")
+                                logger.debug(f"      🔗 URL: {chunk_data['url']}")
 
                     except Exception as doc_error:
-                        print(f"      ⚠️ 문서 정보 조회 실패: {doc_error}")
+                        logger.warning(f"      ⚠️ 문서 정보 조회 실패: {doc_error}")
 
                 results.append(chunk_data)
 
-            print(f"✅ 최종 결과: {len(results)}개 반환\n")
+            logger.info(f"✅ 최종 결과: {len(results)}개 반환")
             return results
 
         except Exception as e:
-            print(f"❌ 검색 오류: {e}")
+            logger.error(f"❌ 검색 오류: {e}")
             import traceback
             traceback.print_exc()
             return []
 
-
-        # ==================== messages ====================
+    # ==================== messages ====================
 
     def save_message(self, user_id: str, user_query: str, ai_response: str,
                      source_chunk_ids: Optional[List[str]] = None,
@@ -196,7 +212,8 @@ class SupabaseService:
             response = self.client.table("messages").insert(data).execute()
             return response.data[0] if response.data else {}
         except Exception as e:
-            print(f"⚠️ 메시지 저장 실패: {e}")
+            logger.error(f"⚠️ 메시지 저장 실패: {e}")
             return {}
-# 글로벌 인스턴스
+
+# 글로벌 인스턴스 (Service Role - 관리용)
 supabase_service = SupabaseService()

@@ -1,8 +1,8 @@
-# services/langchain_rag_service.py (LangChain 1.0 + 베디 프롬프트 개선 + 표 모드 추가)
+# services/langchain_rag_service.py (✅ 사용자 클라이언트 지원 추가)
 
 import re
 from unicodedata import normalize as unicode_normalize
-from typing import List, Dict, Any, Generator
+from typing import List, Dict, Any, Generator, Optional
 
 # LangChain 1.0 Import
 from langchain_openai import ChatOpenAI
@@ -13,7 +13,7 @@ from langchain_core.tools import tool
 from langchain.agents import create_agent
 
 from services.embedding_service import embedding_service
-from services.supabase_service import supabase_service
+from services.supabase_service import supabase_service, SupabaseService  # ✅ 클래스 import 추가
 from config import OPENAI_API_KEY
 
 # ===== 커스텀 임베딩 래퍼 =====
@@ -28,8 +28,9 @@ class CustomEmbeddings(Embeddings):
 # ===== Supabase Retriever =====
 class SupabaseRetriever:
     """Supabase 검색 래퍼 (URL 포함)"""
-    def __init__(self, embeddings: Embeddings, k: int = 5, threshold: float = 0.3):
+    def __init__(self, embeddings: Embeddings, supabase_client: SupabaseService, k: int = 5, threshold: float = 0.3):
         self.embeddings = embeddings
+        self.supabase_client = supabase_client  # ✅ 클라이언트 주입
         self.k = k
         self.threshold = threshold
 
@@ -39,7 +40,7 @@ class SupabaseRetriever:
         """
         try:
             query_embedding = self.embeddings.embed_query(query)
-            chunks = supabase_service.search_chunks(
+            chunks = self.supabase_client.search_chunks(  # ✅ 주입된 클라이언트 사용
                 embedding=query_embedding,
                 limit=self.k,
                 threshold=self.threshold
@@ -128,7 +129,7 @@ EU MRV는 유럽연합이 해운업계의 온실가스 배출 투명성을 확�
 
 📚 참고 문서:
 - EU MRV 제품 사양서 > (1) EU MRV 정의
-URL: https://lab021.atlassian.net/wiki/spaces/TxYP20CKMWxg/pages/3017932877/EU+MRV
+URL: [https://lab021.atlassian.net/wiki/spaces/TxYP20CKMWxg/pages/3017932877/EU+MRV](https://lab021.atlassian.net/wiki/spaces/TxYP20CKMWxg/pages/3017932877/EU+MRV)
 
 혹시 더 궁금한 점이 있으신가요?
 
@@ -180,7 +181,7 @@ URL: https://lab021.atlassian.net/wiki/spaces/TxYP20CKMWxg/pages/3017932877/EU+M
 ✅ 올바른 예:
 📚 참고 문서:
 - EU MRV 제품 사양서 > (1) EU MRV 정의
-URL: https://lab021.atlassian.net/wiki/spaces/TxYP20CKMWxg/pages/3017932877/EU+MRV
+URL: [https://lab021.atlassian.net/wiki/spaces/TxYP20CKMWxg/pages/3017932877/EU+MRV](https://lab021.atlassian.net/wiki/spaces/TxYP20CKMWxg/pages/3017932877/EU+MRV)
 
 ## 특수 상황 대응
 ### 문서에 정보가 없을 때:
@@ -248,7 +249,7 @@ URL: https://...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
-# ===== 사용자 메시지 템플릿 (줄바꿈 강제) =====
+# ===== 사용자 메시지 템플릿 =====
 USER_MESSAGE_TEMPLATE = """아래 검색된 문서를 기반으로 질문에 정확하게 답변해 주세요.
 
 【검색된 문서】
@@ -311,7 +312,7 @@ URL: https://...
 
 번호 리스트나 하이픈 리스트는 절대 사용하지 마세요!"""
 
-# ===== LangChain 1.0 RAG 서비스 (개선) =====
+# ===== LangChain 1.0 RAG 서비스 (✅ 사용자 클라이언트 지원) =====
 class LangChainRAGService:
     """LangChain 1.0 기반 RAG 서비스 (베디 프롬프트 적용)"""
 
@@ -322,54 +323,24 @@ class LangChainRAGService:
         # 1. 임베딩
         self.embeddings = CustomEmbeddings()
 
-        # 2. Retriever
-        self.retriever = SupabaseRetriever(
-            embeddings=self.embeddings,
-            k=5,
-            threshold=0.3
-        )
-
-        # 3. LLM (개선된 설정)
+        # 2. LLM (개선된 설정)
         self.llm = ChatOpenAI(
             model="gpt-4o-mini",
-            temperature=0.3,  # ✅ 낮춰서 일관성 향상
+            temperature=0.3,
             openai_api_key=OPENAI_API_KEY,
             streaming=True
         )
 
-        # 4. 기본 프롬프트 템플릿 (재사용)
-        # 기본 프롬프트
+        # 3. 프롬프트 템플릿
         self.base_prompt_template = ChatPromptTemplate.from_messages([
             ("system", VEDDY_SYSTEM_PROMPT),
             ("user", USER_MESSAGE_TEMPLATE)
         ])
 
-        # 🔥 표 모드 프롬프트 (시스템 + 사용자 메시지 둘 다 강화)
         self.table_prompt_template = ChatPromptTemplate.from_messages([
-            ("system", VEDDY_SYSTEM_PROMPT + TABLE_MODE_PROMPT),  # 시스템에 표 규칙 추가
-            ("user", TABLE_USER_MESSAGE_TEMPLATE)  # 🆕 사용자 메시지도 표 전용으로
+            ("system", VEDDY_SYSTEM_PROMPT + TABLE_MODE_PROMPT),
+            ("user", TABLE_USER_MESSAGE_TEMPLATE)
         ])
-
-        # 6. Tool 정의
-        @tool
-        def search_knowledge_base(query: str) -> str:
-            """베슬링크 사내 문서(Confluence 위키, 규정, 매뉴얼)를 검색합니다."""
-            context, _ = self.retriever.search(query)
-            return context
-
-        self.tools = [search_knowledge_base]
-
-        # 7. Agent 생성 시도 (선택사항)
-        self.agent = None
-        try:
-            self.agent = create_agent(
-                model="openai:gpt-4o-mini",
-                tools=self.tools,
-                system_prompt=VEDDY_SYSTEM_PROMPT
-            )
-            print("✅ LangChain 1.0 Agent 사용")
-        except Exception as e:
-            print(f"⚠️ create_agent 실패, 직접 LLM 호출 모드 ({e})")
 
         print("✅ LangChain 1.0 RAG Service 초기화 완료")
 
@@ -401,36 +372,53 @@ class LangChainRAGService:
         # 5. 최종 정리
         return text.strip()
 
-    def process_query(self, user_id: str, query: str, table_mode: bool = False) -> Dict[str, Any]:
-        """RAG 쿼리 처리 (일반 응답) - 🆕 표 모드 추가"""
+    def process_query(
+            self,
+            user_id: str,
+            query: str,
+            table_mode: bool = False,
+            supabase_client: Optional[SupabaseService] = None  # ✅ 사용자 클라이언트 주입
+    ) -> Dict[str, Any]:
+        """RAG 쿼리 처리 (일반 응답) - 🆕 표 모드 + 사용자 클라이언트 추가"""
         try:
-            # 1. 문서 검색
-            context_text, raw_chunks = self.retriever.search(query)
+            # ✅ 클라이언트 선택: 전달된 것이 있으면 사용, 없으면 글로벌 사용
+            client = supabase_client if supabase_client else supabase_service
 
-            # 🆕 2. 표 모드에 따라 프롬프트 선택
+            # 1. Retriever 생성 (사용자 클라이언트 사용)
+            retriever = SupabaseRetriever(
+                embeddings=self.embeddings,
+                supabase_client=client,  # ✅ 사용자 클라이언트 전달
+                k=5,
+                threshold=0.3
+            )
+
+            # 2. 문서 검색
+            context_text, raw_chunks = retriever.search(query)
+
+            # 3. 프롬프트 선택
             prompt_template = self.table_prompt_template if table_mode else self.base_prompt_template
 
-            # 3. 프롬프트 생성
+            # 4. 메시지 생성
             messages = prompt_template.format_messages(
                 context=context_text,
                 query=query
             )
 
-            # 4. LLM 호출
+            # 5. LLM 호출
             response = self.llm.invoke(messages)
             ai_response = response.content
 
-            # ✅ 5. 응답 정규화 추가
+            # ✅ 6. 응답 정규화
             ai_response = self._normalize_response(ai_response)
 
-            # 6. 소스 ID 추출
+            # 7. 소스 ID 추출
             source_chunk_ids = [
                 chunk.get('id') for chunk in raw_chunks
                 if chunk.get('id')
             ]
 
-            # 7. 메시지 저장
-            supabase_service.save_message(
+            # 8. 메시지 저장 (사용자 클라이언트 사용)
+            client.save_message(
                 user_id=user_id,
                 user_query=query,
                 ai_response=ai_response,
@@ -449,53 +437,63 @@ class LangChainRAGService:
             print(f"❌ RAG 처리 중 오류: {e}")
             raise
 
-    def process_query_streaming(self, user_id: str, query: str, table_mode: bool = False) -> Generator[str, None, None]:
-        """RAG 스트리밍 응답 (토큰별 정규화 추가) - 🆕 표 모드 추가"""
+    def process_query_streaming(
+            self,
+            user_id: str,
+            query: str,
+            table_mode: bool = False,
+            supabase_client: Optional[SupabaseService] = None  # ✅ 사용자 클라이언트 주입
+    ) -> Generator[str, None, None]:
+        """RAG 스트리밍 응답 (토큰별 정규화 추가) - 🆕 표 모드 + 사용자 클라이언트 추가"""
         try:
-            # 1. 문서 검색
-            context_text, raw_chunks = self.retriever.search(query)
+            # ✅ 클라이언트 선택
+            client = supabase_client if supabase_client else supabase_service
 
-            # 2. 프롬프트 선택
+            # 1. Retriever 생성
+            retriever = SupabaseRetriever(
+                embeddings=self.embeddings,
+                supabase_client=client,  # ✅ 사용자 클라이언트 전달
+                k=5,
+                threshold=0.3
+            )
+
+            # 2. 문서 검색
+            context_text, raw_chunks = retriever.search(query)
+
+            # 3. 프롬프트 선택
             prompt_template = self.table_prompt_template if table_mode else self.base_prompt_template
 
-            # 🔍 프롬프트 내용 일부 출력 (디버깅용)
             print(f"[RAG] table_mode: {table_mode}")
             if table_mode:
                 print(f"[RAG] 표 모드 프롬프트 사용 중")
-                print(f"[RAG] TABLE_MODE_PROMPT 앞부분: {TABLE_MODE_PROMPT[:100]}...")
 
-            # 3. 메시지 생성
+            # 4. 메시지 생성
             messages = prompt_template.format_messages(
                 context=context_text,
                 query=query
             )
 
-            # 🔍 실제 LLM에 전달되는 메시지 확인 (디버깅용)
-            print(f"[RAG] 시스템 메시지 길이: {len(messages[0].content)} chars")
-            print(f"[RAG] 사용자 메시지 길이: {len(messages[1].content)} chars")
-
-            # 4. 스트리밍 LLM 호출
+            # 5. 스트리밍 LLM 호출
             full_response = ""
             for chunk in self.llm.stream(messages):
                 if hasattr(chunk, 'content') and chunk.content:
                     token = chunk.content
-                    # ✅ 각 토큰 정규화 (핵심!)
+                    # ✅ 각 토큰 정규화
                     normalized_token = unicode_normalize('NFC', token)
                     full_response += normalized_token
-                    # ✅ 정규화된 토큰 반환
                     yield normalized_token
 
-            # 5. 최종 응답 정규화 (저장용)
+            # 6. 최종 응답 정규화 (저장용)
             final_normalized = self._normalize_response(full_response)
 
-            # 6. 소스 ID 추출
+            # 7. 소스 ID 추출
             source_chunk_ids = [
                 chunk.get('id') for chunk in raw_chunks
                 if chunk.get('id')
             ]
 
-            # 7. 메시지 저장
-            supabase_service.save_message(
+            # 8. 메시지 저장 (사용자 클라이언트 사용)
+            client.save_message(
                 user_id=user_id,
                 user_query=query,
                 ai_response=final_normalized,
