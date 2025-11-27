@@ -1,4 +1,4 @@
-# backend/routers/teams_router.py
+# backend/routers/teams_router.py (✅ source_chunk_ids, usage 저장 추가)
 
 from fastapi import APIRouter, Request, HTTPException
 from botbuilder.schema import Activity, ActivityTypes
@@ -91,7 +91,7 @@ async def handle_teams_message(request: Request):
         )
         logger.info(f"user_fk: {user_fk}")
 
-        # RAG 처리
+        # RAG 처리 (순수 응답만 반환)
         admin_supabase = supabase_service
 
         await teams_service.send_typing_indicator(activity)
@@ -104,9 +104,12 @@ async def handle_teams_message(request: Request):
         )
 
         answer = rag_result.get("ai_response", "")
+        source_chunk_ids = rag_result.get("source_chunk_ids", [])  # ✅ 추가
+        usage = rag_result.get("usage", {})  # ✅ 추가
+
         logger.info(f"RAG complete: {len(answer)} chars")
 
-        # ✅ 메시지 저장
+        # ✅ 메시지 저장 (source_chunk_ids, usage 포함!)
         if answer:
             try:
                 admin_supabase.client.table("messages").insert({
@@ -114,9 +117,11 @@ async def handle_teams_message(request: Request):
                     "user_fk": user_fk,
                     "user_query": user_message,
                     "ai_response": answer,
+                    "source_chunk_ids": source_chunk_ids if source_chunk_ids else None,  # ✅ 추가
+                    "usage": usage if usage else {},  # ✅ 추가
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
-                logger.info(f"✅ Teams 메시지 저장 완료")
+                logger.info(f"✅ Teams 메시지 저장 완료 (1회) - chunks: {len(source_chunk_ids)}")
             except Exception as e:
                 logger.error(f"⚠️ 메시지 저장 실패: {str(e)}")
 

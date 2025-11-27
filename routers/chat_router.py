@@ -1,4 +1,4 @@
-# backend/routers/chat_router.py (수정)
+# backend/routers/chat_router.py (✅ user_fk, source_chunk_ids, usage 저장)
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 from model.schemas import ChatRequest
 from services.langchain_rag_service import langchain_rag_service
 from services.supabase_service import SupabaseService
-from services.microsoft_graph_service import microsoft_graph_service  # ✅ 추가
+from services.microsoft_graph_service import microsoft_graph_service
 from auth.auth_service import verify_supabase_token
 from auth.user_service import user_service
 import asyncio
@@ -27,7 +27,7 @@ async def chat_stream(
     user_id = user["user_id"]
     email = user.get("email")
     name = user.get("name")
-    azure_oid = user.get("azure_oid")  # ✅ 추가
+    azure_oid = user.get("azure_oid")
     access_token = user["access_token"]
 
     logger.info(f"[chat.py] user_id: {user_id}, email: {email}, name: {name}")
@@ -49,7 +49,22 @@ async def chat_stream(
             logger.info(f"🌊 스트리밍 시작: {request.query[:50]}...")
             logger.info(f"👤 사용자: {user_id}")
 
-            # RAG 처리
+            # RAG 처리 전에 먼저 문서 검색하여 source_chunk_ids 추출
+            from services.embedding_service import embedding_service
+            from services.langchain_rag_service import SupabaseRetriever, CustomEmbeddings
+
+            # 검색 수행
+            embeddings = CustomEmbeddings()
+            retriever = SupabaseRetriever(
+                embeddings=embeddings,
+                supabase_client=user_supabase,
+                k=5,
+                threshold=0.3
+            )
+            _, raw_chunks = retriever.search(request.query)
+            source_chunk_ids = [chunk.get('id') for chunk in raw_chunks if chunk.get('id')]
+
+            # RAG 처리 (순수 응답만 반환)
             full_response = ""
             for token in langchain_rag_service.process_query_streaming(
                     user_id=user_id,
@@ -72,20 +87,22 @@ async def chat_stream(
 
             formatted = re.sub(r'\n{4,}', '\n\n', formatted)
 
-            # ✅ 메시지 저장 (user_fk 포함)
+            # ✅ 메시지 저장 (user_fk, source_chunk_ids, usage 포함!)
             try:
                 user_supabase.client.table("messages").insert({
                     "user_id": user_id,
-                    "user_fk": user_fk,
+                    "user_fk": user_fk,  # ✅ user_fk 추가
                     "user_query": request.query,
                     "ai_response": formatted,
+                    "source_chunk_ids": source_chunk_ids if source_chunk_ids else None,  # ✅ 추가
+                    "usage": {},  # ✅ 추가
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
-                logger.info(f"✅ 메시지 저장 완료")
+                logger.info(f"✅ 메시지 저장 완료 (1회) - user_fk: {user_fk}, chunks: {len(source_chunk_ids)}")
             except Exception as e:
                 logger.error(f"⚠️ 메시지 저장 실패: {str(e)}")
 
-            # 토큰 전송
+            # ✅ 토큰 전송
             for i, char in enumerate(formatted):
                 data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
                 output = f" {data}\n\n"
