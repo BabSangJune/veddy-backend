@@ -1,79 +1,86 @@
-"""Teams Bot API 라우터 (완전 버전 + 🆕 표 모드 지원)"""
-
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from botbuilder.schema import Activity, ActivityTypes
 import logging
-
 from services.langchain_rag_service import langchain_rag_service
 from services.teams_service import teams_service
+from auth.auth_service import verify_supabase_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/teams", tags=["teams"])
 
 @router.post("/messages")
-async def handle_teams_message(request: Request):
-    """Teams Bot Service 엔드포인트 (완전 버전 + 🆕 표 모드 지원)"""
+async def handle_teams_message(
+        request: Request,
+        user: dict = Depends(verify_supabase_token)
+):
+    """Teams 봇 메시지 핸들러 (🔐 인증 필수)"""
+    user_id = user["user_id"]
     activity = None
-    try:
-        # Activity 파싱
-        activity_data = await request.json()
-        activity = Activity().deserialize(activity_data)
-        logger.info(f"📩 Received: {activity.type}")
 
-        # 메시지만 처리
+    try:
+        activity_data = await request.json()
+        activity = Activity.deserialize(activity_data)
+
+        logger.info(f"Received {activity.type}")
+
+        # TITLE Activity 타입 확인
         if activity.type != ActivityTypes.message:
             return {"status": "ok"}
 
         user_message = activity.text
-        if not user_message or user_message.strip() == "":
+        if not user_message or not user_message.strip():
             return {"status": "ok"}
 
-        logger.info(f"💬 Message: {user_message}")
+        logger.info(f"Message: {user_message}")
 
-        # 🔧 Step 1: 타이핑 인디케이터 (선택, 실패 허용)
-        await teams_service.send_typing_indicator(activity)
-
-        # 🆕 Step 1.5: 표 모드 키워드 감지
-        table_keywords = ["표로", "비교", "차이점", "정리해줘", "비교해줘"]
+        # TITLE 테이블 모드 감지
+        table_keywords = ["테이블", "표", "데이터", "통계"]
         table_mode = any(keyword in user_message for keyword in table_keywords)
 
         if table_mode:
-            logger.info(f"📊 표 모드 자동 활성화 (키워드 감지)")
+            logger.info(f"TITLE Step 1.5: 테이블 모드 활성화")
 
-        # 🔧 Step 2: RAG 처리
-        user_id = activity.from_property.id if activity.from_property else "teams_user"
-        logger.info(f"🔍 RAG processing for {user_id}")
+        # TITLE Step 1: Teams 사용자 ID 추출
+        teams_user_id = activity.from_property.id if activity.from_property else "teams-user"
+        logger.info(f"RAG processing for user_id: {user_id}, teams_user_id: {teams_user_id}")
 
-        # 🆕 table_mode 전달
+        # TITLE Step 2: 타이핑 표시
+        await teams_service.send_typing_indicator(activity)
+
+        # TITLE Step 3: RAG 처리
         rag_result = langchain_rag_service.process_query(
-            user_id=user_id,
+            user_id=user_id,  # ✅ JWT에서 추출한 user_id 사용
             query=user_message,
-            table_mode=table_mode  # 🆕 표 모드 전달
+            table_mode=table_mode
         )
 
-        answer = rag_result.get("ai_response", "답변 생성 실패")
-        logger.info(f"✅ RAG complete: {len(answer)} chars")
+        answer = rag_result.get("aiResponse", "")
+        logger.info(f"RAG complete: {len(answer)} chars")
 
-        # 🔧 Step 3: Teams로 응답 (필수)
-        success = await teams_service.send_reply(activity, answer)
+        # TITLE Step 4: Teams에 응답 전송
+        if answer:
+            success = await teams_service.send_reply_activity(activity, answer)
+            return {
+                "status": "success",
+                "query": user_message,
+                "response_length": len(answer),
+                "table_mode": table_mode
+            }
 
-        return {
-            "status": "success",
-            "query": user_message,
-            "response_length": len(answer),
-            "table_mode": table_mode  # 🆕 응답에 표 모드 상태 포함
-        }
+        return {"status": "no_response"}
 
     except Exception as e:
-        logger.error(f"❌ Error: {e}", exc_info=True)
-        # 에러 메시지 전송 시도
+        logger.error(f"Error: {e}", exc_info=True)
+
+        # TITLE Step 5: 에러 메시지 전송 (activity가 있는 경우만)
         if activity:
             try:
-                error_msg = "❌ 오류 발생. IT 부서에 문의하세요."
-                await teams_service.send_reply(activity, error_msg)
+                error_msg = f"죄송합니다. 처리 중 오류가 발생했습니다.\n오류: {str(e)}"
+                await teams_service.send_reply_activity(activity, error_msg)
             except:
                 pass
+
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/health")

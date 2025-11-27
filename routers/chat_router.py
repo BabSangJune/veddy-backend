@@ -1,10 +1,9 @@
-# routers/chat_router.py
-
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 from model.schemas import ChatRequest
 from services.langchain_rag_service import langchain_rag_service
+from auth.auth_service import verify_supabase_token
 import asyncio
 import logging
 import re
@@ -15,22 +14,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest):
-    """RAG 챗봇 스트리밍 (✅ 표준 SSE 형식 + 🆕 표 모드 지원)"""
+async def chat_stream(
+        request: ChatRequest,
+        user: dict = Depends(verify_supabase_token)
+):
+    """RAG 챗봇 스트리밍 (✅ 표준 SSE 형식 + 🆕 표 모드 지원 + 🔐 인증 필수)"""
+    user_id = user["user_id"]
+
     print(f"[chat.py] table_mode: {request.table_mode}")
     print(f"[chat.py] query: {request.query}")
+    print(f"[chat.py] user_id: {user_id}")  # 🆕 사용자 ID 로그
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             logger.info(f"🌊 스트리밍 시작: {request.query[:50]}...")
-            logger.info(f"📊 표 모드: {'활성화' if request.table_mode else '비활성화'}")  # 🆕 로그 추가
+            logger.info(f"📊 표 모드: {'활성화' if request.table_mode else '비활성화'}")
+            logger.info(f"👤 사용자: {user_id}")  # 🆕 사용자 ID 로그
 
             # 🆕 1. 모든 토큰 수집 (table_mode 전달)
             full_response = ""
             for token in langchain_rag_service.process_query_streaming(
-                    user_id=request.user_id,
+                    user_id=user_id,  # ✅ JWT 토큰에서 추출한 user_id 사용
                     query=request.query,
-                    table_mode=request.table_mode  # 🆕 표 모드 전달
+                    table_mode=request.table_mode
             ):
                 if token:
                     full_response += token
@@ -50,19 +56,19 @@ async def chat_stream(request: ChatRequest):
             # 3. 토큰 전송
             for i, char in enumerate(formatted):
                 data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
-                output = f" {data}\n\n"
+                output = f"data: {data}\n\n"
                 yield output
                 await asyncio.sleep(0.001)
 
             # 4. 완료 신호
-            yield f" {json.dumps({'type': 'done'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
             logger.info(f"✅ 스트리밍 완료")
 
         except Exception as e:
             logger.error(f"❌ 오류: {str(e)}")
             import traceback
             traceback.print_exc()
-            yield f" {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
 
     return StreamingResponse(
         generate_stream(),
