@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  veddy-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: veddy-backend-local
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - ENVIRONMENT=development
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+    volumes:
+      - .:/app
+    networks:
+      - veddy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  veddy-network:
+    driver: bridge

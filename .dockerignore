@@ -1,0 +1,63 @@
+# Git 및 버전 관리
+.git
+.gitignore
+.gitattributes
+.github
+
+# IDE
+.idea
+.vscode
+.DS_Store
+*.swp
+*.swo
+*~
+*.iml
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.coverage
+*.egg
+dist
+build
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.tox
+env
+venv
+pyvenv
+
+# 환경변수 (프로덕션은 Azure에서 관리)
+.env
+.env.local
+.env.*.local
+
+# 테스트 및 디버그
+test/
+*.test.py
+debug/
+*.debug
+test_streaming.html
+
+# 백업
+backup/
+*.bak
+*.backup
+
+# 기타
+*.log
+*.pot
+.cache
+.pytest
+README.md
+node_modules
+
+# 개발 파일
+.junie
+supabase_debug.py
+test_import.py
+load_confluence_data.py
