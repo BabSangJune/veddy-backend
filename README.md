@@ -10,3 +10,8 @@ az containerapp update \
 --resource-group VESSELLINK_BOT_RESOURCE \
 --min-replicas 1 \
 --max-replicas 3
+
+# 로그 대시보드 생성
+az monitor log-analytics workspace show \
+--resource-group VESSELLINK_BOT_RESOURCE \
+--workspace-name log-veddy-prod
