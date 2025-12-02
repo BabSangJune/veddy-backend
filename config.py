@@ -61,3 +61,26 @@ GUNICORN_WORKERS = int(os.getenv("GUNICORN_WORKERS", 4))
 MICROSOFT_APP_ID = os.getenv("MICROSOFT_APP_ID")
 MICROSOFT_APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD")
 MICROSOFT_TENANT_ID = os.getenv("MICROSOFT_TENANT_ID")
+
+
+import logging
+
+# ==========================================
+# 로깅 설정
+# ==========================================
+
+# 기본 로깅 레벨
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL.upper()),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# ✅ httpcore, hpack DEBUG 로그 끄기 (프로덕션)
+if IS_PRODUCTION:
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("hpack").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+else:
+    # 개발 모드에서는 DEBUG 유지 (필요 시)
+    logging.getLogger("httpcore").setLevel(logging.INFO)
+    logging.getLogger("hpack").setLevel(logging.INFO)

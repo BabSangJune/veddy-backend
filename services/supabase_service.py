@@ -9,6 +9,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 class SupabaseService:
+    # ✅ 클래스 레벨 클라이언트 (싱글톤)
+    _service_role_client: Optional[Client] = None
+
     def __init__(self, access_token: Optional[str] = None):
         """
         Supabase 클라이언트 초기화
@@ -23,13 +26,23 @@ class SupabaseService:
             logger.info("✅ Supabase 사용자 클라이언트 초기화 (RLS 활성화)")
         else:
             # 🔑 Service Role 클라이언트 (관리자용, RLS 우회)
-            self.client: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-            logger.info("✅ Supabase Service Role 클라이언트 초기화")
+            # ✅ 클래스 레벨 싱글톤 재사용
+            if SupabaseService._service_role_client is None:
+                SupabaseService._service_role_client = create_client(
+                    SUPABASE_URL,
+                    SUPABASE_SERVICE_ROLE_KEY
+                )
+                logger.info("✅ Supabase Service Role 클라이언트 초기화 (최초)")
+            else:
+                logger.debug("♻️  기존 Service Role 클라이언트 재사용")
+
+            self.client = SupabaseService._service_role_client
 
     def test_connection(self) -> bool:
         """Supabase 연결 테스트"""
         try:
             response = self.client.table("documents").select("id").limit(1).execute()
+            logger.info("✅ Supabase 연결 테스트 성공")
             return True
         except Exception as e:
             logger.error(f"❌ 연결 테스트 실패: {e}")
@@ -215,5 +228,5 @@ class SupabaseService:
             logger.error(f"⚠️ 메시지 저장 실패: {e}")
             return {}
 
-# 글로벌 인스턴스 (Service Role - 관리용)
+# ✅ 글로벌 인스턴스 (Service Role - 관리용)
 supabase_service = SupabaseService()

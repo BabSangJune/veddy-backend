@@ -2,7 +2,7 @@ import sys
 import os
 import logging
 
-# ✅ uvloop 적용 (asyncio 성능 2배 향상)
+# uvloop 적용
 try:
     import uvloop
     import asyncio
@@ -10,6 +10,29 @@ try:
     print("✅ uvloop 활성화!")
 except ImportError:
     print("⚠️  uvloop 미설치 - 기본 asyncio 사용")
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from config import (
+    SERVER_HOST,
+    SERVER_PORT,
+    ALLOWED_ORIGINS,
+    ENV,
+    IS_PRODUCTION,
+    LOG_LEVEL
+)
+
+# ✅ 로깅 설정 (프로덕션에서 httpcore DEBUG 끄기)
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL.upper()),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+if IS_PRODUCTION:
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("hpack").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.INFO)
+    logging.getLogger("h11").setLevel(logging.WARNING)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,16 +68,60 @@ TITLE = "=" * 50
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ==========================================
+    # 시작 시 실행 (Startup)
+    # ==========================================
     print(TITLE)
     print(f"🚀 VEDDY - Vessellink Buddy! [{ENV.upper()}]")
     print(TITLE)
+
+    # ✅ DB 연결 테스트
+    print("📊 Supabase 연결 확인 중...")
+    try:
+        is_connected = supabase_service.test_connection()
+        if is_connected:
+            print("✅ Supabase 연결 성공!")
+        else:
+            print("⚠️  Supabase 연결 실패 - 서비스가 제한될 수 있습니다")
+    except Exception as e:
+        print(f"❌ Supabase 연결 오류: {e}")
+        logger.error(f"Supabase 연결 오류: {e}", exc_info=True)
+
+    # ✅ 임베딩 모델 워밍업 (선택)
+    if ENV == "production":
+        print("🤖 임베딩 모델 워밍업 중...")
+        try:
+            # 더미 텍스트로 모델 워밍업 (첫 요청 지연 방지)
+            embedding_service.embed_text("테스트")
+            print("✅ 임베딩 모델 준비 완료!")
+        except Exception as e:
+            print(f"⚠️  임베딩 모델 워밍업 경고: {e}")
+            logger.warning(f"임베딩 모델 워밍업 경고: {e}")
+
     print("- API 서버 시작")
     print("- Teams 봇 시작")
     if IS_PRODUCTION:
         print("- Swagger 문서 비활성화 (프로덕션 모드)")
     print(TITLE)
-    yield
-    print("🛑 VEDDY 서버 종료!")
+
+    yield  # 여기서 앱 실행
+
+    # ==========================================
+    # 종료 시 실행 (Shutdown)
+    # ==========================================
+    print(TITLE)
+    print("🛑 VEDDY 서버 종료 중...")
+
+    # ✅ 정리 작업
+    try:
+        # Supabase 클라이언트는 자동으로 정리됨 (httpx 내부 처리)
+        print("✅ 리소스 정리 완료")
+    except Exception as e:
+        print(f"⚠️  종료 중 오류: {e}")
+        logger.error(f"종료 중 오류: {e}", exc_info=True)
+
+    print("👋 안녕히 가세요!")
+    print(TITLE)
 
 # ✅ FastAPI 앱 생성 (프로덕션에서는 Swagger 비활성화)
 app = FastAPI(
