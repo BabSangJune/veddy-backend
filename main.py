@@ -1,3 +1,5 @@
+# main.py
+
 import sys
 import os
 import logging
@@ -13,6 +15,10 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ✅ 로깅 설정 (가장 먼저!)
+from logging_config import setup_logging
+setup_logging()
+
 from config import (
     SERVER_HOST,
     SERVER_PORT,
@@ -21,35 +27,11 @@ from config import (
     IS_PRODUCTION,
     LOG_LEVEL
 )
-
-# ✅ 로깅 설정 (프로덕션에서 httpcore DEBUG 끄기)
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-if IS_PRODUCTION:
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("hpack").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.INFO)
-    logging.getLogger("h11").setLevel(logging.WARNING)
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-
-# ✅ config 임포트 (환경 변수 로드)
-from config import (
-    SERVER_HOST,
-    SERVER_PORT,
-    ALLOWED_ORIGINS,
-    ENV,
-    IS_PRODUCTION,
-    LOG_LEVEL
-)
 
 from services.embedding_service import embedding_service
 from services.supabase_service import supabase_service
@@ -57,11 +39,6 @@ from services.langchain_rag_service import langchain_rag_service
 from routers import chat_router
 from routers import teams_router
 
-# ✅ 로깅 설정
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 TITLE = "=" * 50
@@ -81,8 +58,10 @@ async def lifespan(app: FastAPI):
         is_connected = supabase_service.test_connection()
         if is_connected:
             print("✅ Supabase 연결 성공!")
+            logger.info("Supabase 연결 성공")  # ✅ JSON 로그
         else:
             print("⚠️  Supabase 연결 실패 - 서비스가 제한될 수 있습니다")
+            logger.warning("Supabase 연결 실패")
     except Exception as e:
         print(f"❌ Supabase 연결 오류: {e}")
         logger.error(f"Supabase 연결 오류: {e}", exc_info=True)
@@ -91,9 +70,9 @@ async def lifespan(app: FastAPI):
     if ENV == "production":
         print("🤖 임베딩 모델 워밍업 중...")
         try:
-            # 더미 텍스트로 모델 워밍업 (첫 요청 지연 방지)
             embedding_service.embed_text("테스트")
             print("✅ 임베딩 모델 준비 완료!")
+            logger.info("임베딩 모델 워밍업 완료")
         except Exception as e:
             print(f"⚠️  임베딩 모델 워밍업 경고: {e}")
             logger.warning(f"임베딩 모델 워밍업 경고: {e}")
@@ -104,6 +83,12 @@ async def lifespan(app: FastAPI):
         print("- Swagger 문서 비활성화 (프로덕션 모드)")
     print(TITLE)
 
+    logger.info("VEDDY 서버 시작 완료", extra={
+        "environment": ENV,
+        "workers": os.getenv("GUNICORN_WORKERS"),
+        "swagger_enabled": not IS_PRODUCTION
+    })
+
     yield  # 여기서 앱 실행
 
     # ==========================================
@@ -111,11 +96,11 @@ async def lifespan(app: FastAPI):
     # ==========================================
     print(TITLE)
     print("🛑 VEDDY 서버 종료 중...")
+    logger.info("VEDDY 서버 종료 시작")
 
-    # ✅ 정리 작업
     try:
-        # Supabase 클라이언트는 자동으로 정리됨 (httpx 내부 처리)
         print("✅ 리소스 정리 완료")
+        logger.info("리소스 정리 완료")
     except Exception as e:
         print(f"⚠️  종료 중 오류: {e}")
         logger.error(f"종료 중 오류: {e}", exc_info=True)
@@ -123,7 +108,7 @@ async def lifespan(app: FastAPI):
     print("👋 안녕히 가세요!")
     print(TITLE)
 
-# ✅ FastAPI 앱 생성 (프로덕션에서는 Swagger 비활성화)
+# FastAPI 앱 생성
 app = FastAPI(
     title="VEDDY - Vessellink AI",
     description="Confluence RAG API & Teams Bot",
@@ -134,7 +119,6 @@ app = FastAPI(
     openapi_url=None if IS_PRODUCTION else "/openapi.json"
 )
 
-# CORS 설정
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -143,12 +127,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 라우터 포함
 app.include_router(chat_router.router)
 app.include_router(teams_router.router)
 
 @app.get("/api/health")
 async def health_check():
+    logger.info("Health check 요청", extra={"endpoint": "/api/health"})
     return {
         "status": "healthy",
         "message": "🏥 API 서버 정상 작동 중!",
@@ -161,6 +145,7 @@ async def test_embedding(text: str):
     """임베딩 테스트"""
     try:
         embedding = embedding_service.embed_text(text)
+        logger.info("임베딩 테스트 성공", extra={"text_length": len(text)})
         return {
             "text": text,
             "embedding_dimension": len(embedding),
@@ -168,7 +153,7 @@ async def test_embedding(text: str):
             "status": "success"
         }
     except Exception as e:
-        logger.error(f"Embedding test failed: {e}", exc_info=True)
+        logger.error(f"임베딩 테스트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/test/supabase")
@@ -178,15 +163,17 @@ async def test_supabase():
         is_connected = supabase_service.test_connection()
         if is_connected:
             documents = supabase_service.list_documents(limit=1)
+            logger.info("Supabase 테스트 성공", extra={"documents_count": len(documents)})
             return {
                 "status": "connected",
                 "message": "✅ Supabase 연결 성공!",
                 "documents_count": len(documents)
             }
         else:
+            logger.error("Supabase 연결 실패")
             raise HTTPException(status_code=500, detail="Supabase 연결 실패")
     except Exception as e:
-        logger.error(f"Supabase test failed: {e}", exc_info=True)
+        logger.error(f"Supabase 테스트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/test/teams")
@@ -194,6 +181,7 @@ async def test_teams():
     """Teams 봇 설정 테스트"""
     try:
         from services.teams_service import teams_service
+        logger.info("Teams 설정 확인", extra={"app_id": teams_service.app_id[:8]})
         return {
             "status": "configured",
             "message": "✅ Teams 봇 설정 완료!",
@@ -201,12 +189,15 @@ async def test_teams():
             "endpoint": "/api/teams/messages"
         }
     except Exception as e:
-        logger.error(f"Teams test failed: {e}", exc_info=True)
+        logger.error(f"Teams 테스트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    logger.error(f"Global exception: {exc}", exc_info=True)
+    logger.error(f"Global exception: {exc}", exc_info=True, extra={
+        "path": request.url.path,
+        "method": request.method
+    })
     return JSONResponse(
         status_code=500,
         content={
@@ -217,9 +208,14 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        host=SERVER_HOST,
-        port=SERVER_PORT,
-        reload=(ENV == "development")  # ✅ 개발 모드만 자동 재시작
-    )
+
+    uvicorn_config = {
+        "app": "main:app",
+        "host": SERVER_HOST,
+        "port": SERVER_PORT,
+        "reload": ENV == "development",
+        "log_level": "info",
+        "access_log": ENV == "development",  # 개발 모드에서만 access log
+    }
+
+    uvicorn.run(**uvicorn_config)

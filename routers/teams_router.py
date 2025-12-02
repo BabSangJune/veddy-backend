@@ -1,8 +1,7 @@
-# backend/routers/teams_router.py (✅ source_chunk_ids, usage 저장 추가)
+# backend/routers/teams_router.py (✅ SyntaxError 수정)
 
 from fastapi import APIRouter, Request, HTTPException
 from botbuilder.schema import Activity, ActivityTypes
-import logging
 from services.langchain_rag_service import langchain_rag_service
 from services.supabase_service import supabase_service
 from services.teams_service import teams_service
@@ -11,22 +10,32 @@ from auth.user_service import user_service
 from datetime import datetime
 import asyncio
 
+# ✅ 컨텍스트 로거 임포트
+from logging_config import get_logger, generate_request_id
+import logging
 
-logger = logging.getLogger(__name__)
+base_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/teams", tags=["teams"])
 
-# backend/routers/teams_router.py
 @router.post("/messages")
 async def handle_teams_message(request: Request):
-    """Teams 봇 메시지 핸들러 (Microsoft Graph로 사용자 정보 조회)"""
+    """Teams 봇 메시지 핸들러"""
     activity = None
+
+    # ✅ request_id 생성
+    request_id = generate_request_id()
+
+    # 기본 로거 (user_id 확정 전)
+    logger = get_logger(__name__, request_id=request_id)
 
     try:
         activity_data = await request.json()
         activity = Activity.deserialize(activity_data)
 
-        logger.info(f"Received {activity.type}")
+        logger.info("Teams 메시지 수신", extra={
+            "activity_type": activity.type
+        })
 
         if activity.type != ActivityTypes.message:
             return {"status": "ok"}
@@ -35,29 +44,37 @@ async def handle_teams_message(request: Request):
         if not user_message or not user_message.strip():
             return {"status": "ok"}
 
-        logger.info(f"Message: {user_message}")
-
         # 테이블 모드 감지
         table_keywords = ["테이블", "표", "데이터", "통계"]
         table_mode = any(keyword in user_message for keyword in table_keywords)
 
-        # ✅ Teams 사용자 정보 추출
+        # Teams 사용자 정보 추출
         teams_user_id = activity.from_property.id if activity.from_property else "teams-user"
         user_id = f"teams_{teams_user_id}"
         user_name = activity.from_property.name if activity.from_property else "Unknown"
 
-        logger.info(f"Teams user: {user_name} ({teams_user_id})")
+        # ✅ user_id 확정 후 로거 재생성
+        logger = get_logger(__name__,
+                            request_id=request_id,
+                            user_id=user_id,
+                            teams_user_name=user_name)
 
-        # ✅ aad_object_id 추출
+        logger.info("Teams 사용자 확인", extra={
+            "teams_user_id": teams_user_id,
+            "user_name": user_name
+        })
+
+        # aad_object_id 추출
         azure_ad_object_id = None
         if activity.from_property and hasattr(activity.from_property, 'aad_object_id'):
             azure_ad_object_id = activity.from_property.aad_object_id
-            logger.info(f"✅ aad_object_id found: {azure_ad_object_id}")
+            logger.info("AAD Object ID 추출", extra={
+                "azure_ad_object_id": azure_ad_object_id
+            })
 
         graph_user_id = azure_ad_object_id or teams_user_id
-        logger.info(f"Graph user_id to use: {graph_user_id}")
 
-        # ✅ Microsoft Graph API로 이메일, 부서 등 조회
+        # Microsoft Graph API로 이메일, 부서 등 조회
         user_email = None
         department = None
         job_title = None
@@ -69,13 +86,19 @@ async def handle_teams_message(request: Request):
                 department = graph_user_info.get("department")
                 job_title = graph_user_info.get("jobTitle")
                 user_name = graph_user_info.get("displayName") or user_name
-                logger.info(f"✅ Graph API 조회 성공: {user_email} / 부서: {department}")
+
+                logger.info("Graph API 조회 성공", extra={
+                    "email": user_email,
+                    "department": department
+                })
         except Exception as graph_error:
-            logger.warning(f"⚠️ Graph API 조회 실패 (이메일 없이 진행): {str(graph_error)}")
+            logger.warning("Graph API 조회 실패", extra={
+                "error": str(graph_error)
+            })
 
         teams_tenant_id = activity.channel_data.get("tenant", {}).get("id") if activity.channel_data else None
 
-        # ✅ 사용자 정보 저장
+        # 사용자 정보 저장
         user_fk = await user_service.get_or_create_user(
             user_id=user_id,
             name=user_name,
@@ -90,13 +113,24 @@ async def handle_teams_message(request: Request):
                 "channel_id": activity.channel_id if activity else None
             }
         )
-        logger.info(f"user_fk: {user_fk}")
+
+        logger.info("사용자 정보 저장 완료", extra={"user_fk": user_fk})
 
         admin_supabase = supabase_service
 
         await teams_service.send_typing_indicator(activity)
 
-        # ✅ 타임아웃 적용 (120초)
+        logger.info("RAG 처리 시작", extra={
+            "query_length": len(user_message),
+            "table_mode": table_mode
+        })
+
+        # ✅ 타임아웃 적용 (120초) - 구조 수정
+        rag_result = None
+        answer = ""
+        source_chunk_ids = []
+        usage = {}
+
         try:
             rag_result = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -108,21 +142,27 @@ async def handle_teams_message(request: Request):
                 ),
                 timeout=120.0
             )
+
+            # ✅ 정상 처리 - try 블록 안에서
+            answer = rag_result.get("ai_response", "")
+            source_chunk_ids = rag_result.get("source_chunk_ids", [])
+            usage = rag_result.get("usage", {})
+
+            logger.info("RAG 처리 완료", extra={
+                "response_length": len(answer),
+                "chunks_count": len(source_chunk_ids)
+            })
+
         except asyncio.TimeoutError:
-            logger.error("❌ RAG 처리 타임아웃 (120초)")
+            # ✅ 타임아웃 예외 처리
+            logger.error("RAG 처리 타임아웃", extra={"timeout_seconds": 120})
             error_msg = "죄송합니다. 요청 처리 시간이 초과되었습니다.\n잠시 후 다시 시도해 주세요."
             await teams_service.send_reply(activity, error_msg)
             return {"status": "timeout"}
 
-        answer = rag_result.get("ai_response", "")
-        source_chunk_ids = rag_result.get("source_chunk_ids", [])
-        usage = rag_result.get("usage", {})
-
-        logger.info(f"RAG complete: {len(answer)} chars")
-
-        # ✅ 메시지 저장 (재시도 1회)
+        # ✅ 메시지 저장 (재시도 1회) - 정상 플로우
         if answer:
-            for attempt in range(2):  # 최대 2번 시도
+            for attempt in range(2):
                 try:
                     admin_supabase.client.table("messages").insert({
                         "user_id": user_id,
@@ -133,18 +173,28 @@ async def handle_teams_message(request: Request):
                         "usage": usage if usage else {},
                         "created_at": datetime.utcnow().isoformat()
                     }).execute()
-                    logger.info(f"✅ Teams 메시지 저장 완료 (시도 {attempt+1}) - chunks: {len(source_chunk_ids)}")
+
+                    logger.info("메시지 저장 완료", extra={
+                        "attempt": attempt + 1
+                    })
                     break
                 except Exception as save_error:
                     if attempt == 0:
-                        logger.warning(f"⚠️ 메시지 저장 실패 (재시도): {str(save_error)}")
+                        logger.warning("메시지 저장 실패 (재시도)", extra={
+                            "error": str(save_error)
+                        })
                         await asyncio.sleep(0.5)
                     else:
-                        logger.error(f"❌ 메시지 저장 최종 실패: {str(save_error)}")
+                        logger.error("메시지 저장 최종 실패", extra={
+                            "error": str(save_error)
+                        })
 
         # Teams에 응답 전송
         if answer:
             success = await teams_service.send_reply(activity, answer)
+            logger.info("Teams 응답 전송 완료", extra={
+                "success": success
+            })
             return {
                 "status": "success",
                 "query": user_message,
@@ -155,11 +205,13 @@ async def handle_teams_message(request: Request):
         return {"status": "no_response"}
 
     except Exception as e:
-        logger.error(f"❌ Teams 메시지 처리 오류: {str(e)}", exc_info=True)
+        logger.error("Teams 메시지 처리 오류", extra={
+            "error": str(e),
+            "error_type": type(e).__name__
+        }, exc_info=True)
 
         if activity:
             try:
-                # ✅ 사용자 친화적 에러 메시지
                 error_msg = "죄송합니다. 일시적인 오류가 발생했습니다."
 
                 if "timeout" in str(e).lower():
@@ -173,13 +225,16 @@ async def handle_teams_message(request: Request):
 
                 await teams_service.send_reply(activity, error_msg)
             except Exception as send_error:
-                logger.error(f"❌ 에러 메시지 전송 실패: {str(send_error)}")
+                logger.error("에러 메시지 전송 실패", extra={
+                    "error": str(send_error)
+                })
 
-        # ✅ 기술적 에러는 로그에만 남기고, 사용자에게는 간단히
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/health")
 async def health():
+    logger = get_logger(__name__)
+    logger.info("Teams health check")
     return {
         "status": "healthy",
         "service": "Teams Bot",

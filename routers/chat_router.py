@@ -1,4 +1,4 @@
-# backend/routers/chat_router.py (✅ SSE 에러 핸들링 개선)
+# backend/routers/chat_router.py
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -6,43 +6,53 @@ from typing import AsyncGenerator
 from model.schemas import ChatRequest
 from services.langchain_rag_service import langchain_rag_service
 from services.supabase_service import SupabaseService
-from services.microsoft_graph_service import microsoft_graph_service
 from auth.auth_service import verify_supabase_token
 from auth.user_service import user_service
 import asyncio
-import logging
 import re
 import json
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+# ✅ 컨텍스트 로거 임포트
+from logging_config import get_logger, generate_request_id
+import logging
+
+# 기본 로거 (모듈 레벨)
+base_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 @router.post("/stream")
 async def chat_stream(
         request_body: ChatRequest,
-        request: Request,  # Request 추가 (연결 끊김 감지용)
+        request: Request,
         user: dict = Depends(verify_supabase_token)
 ):
     user_id = user["user_id"]
     email = user.get("email")
     name = user.get("name")
-    azure_oid = user.get("azure_oid")
     access_token = user["access_token"]
 
-    logger.info(f"[chat.py] user_id: {user_id}, email: {email}, name: {name}")
+    # ✅ request_id 생성
+    request_id = generate_request_id()
 
-    # ✅ 사용자 정보 저장 (users 테이블)
+    # ✅ 컨텍스트 로거 생성 (user_id, request_id 포함)
+    logger = get_logger(__name__, user_id=user_id, request_id=request_id, email=email)
+
+    logger.info("채팅 요청 수신", extra={
+        "query_length": len(request_body.query),
+        "table_mode": request_body.table_mode
+    })
+
+    # 사용자 정보 저장
     user_fk = await user_service.get_or_create_user(
         user_id=user_id,
         email=email,
         name=name,
         auth_type="general"
     )
-    logger.info(f"[chat.py] user_fk: {user_fk}")
+    logger.info("사용자 정보 확인", extra={"user_fk": user_fk})
 
-    # ✅ 사용자별 Supabase 클라이언트
     user_supabase = SupabaseService(access_token=access_token)
 
     async def generate_stream() -> AsyncGenerator[str, None]:
@@ -50,8 +60,9 @@ async def chat_stream(
         source_chunk_ids = []
 
         try:
-            logger.info(f"🌊 스트리밍 시작: {request_body.query[:50]}...")
-            logger.info(f"👤 사용자: {user_id}")
+            logger.info("스트리밍 시작", extra={
+                "query_preview": request_body.query[:50]
+            })
 
             # ✅ 타임아웃 설정 (120초)
             async def rag_with_timeout():
@@ -62,6 +73,7 @@ async def chat_stream(
                 from services.langchain_rag_service import SupabaseRetriever, CustomEmbeddings
 
                 # 검색 수행
+                logger.info("벡터 검색 시작")
                 embeddings = CustomEmbeddings()
                 retriever = SupabaseRetriever(
                     embeddings=embeddings,
@@ -72,16 +84,21 @@ async def chat_stream(
                 _, raw_chunks = retriever.search(request_body.query)
                 source_chunk_ids = [chunk.get('id') for chunk in raw_chunks if chunk.get('id')]
 
+                logger.info("벡터 검색 완료", extra={
+                    "chunks_found": len(source_chunk_ids)
+                })
+
                 # RAG 처리 (순수 응답만 반환)
+                logger.info("LLM 응답 생성 시작")
                 for token in langchain_rag_service.process_query_streaming(
                         user_id=user_id,
                         query=request_body.query,
                         table_mode=request_body.table_mode,
                         supabase_client=user_supabase
                 ):
-                    # ✅ 클라이언트 연결 끊김 감지
+                    # 클라이언트 연결 끊김 감지
                     if await request.is_disconnected():
-                        logger.warning("⚠️ 클라이언트 연결 끊김 - 스트리밍 중단")
+                        logger.warning("클라이언트 연결 끊김 - 스트리밍 중단")
                         raise asyncio.CancelledError("Client disconnected")
 
                     if token:
@@ -91,11 +108,13 @@ async def chat_stream(
             try:
                 await asyncio.wait_for(rag_with_timeout(), timeout=120.0)
             except asyncio.TimeoutError:
-                logger.error("❌ RAG 처리 타임아웃 (120초)")
+                logger.error("RAG 처리 타임아웃", extra={"timeout_seconds": 120})
                 yield f" {json.dumps({'type': 'error', 'error': '요청 처리 시간이 초과되었습니다. 다시 시도해 주세요.'}, ensure_ascii=False)}\n\n"
                 return
 
-            logger.info(f"✅ 토큰 수집 완료 ({len(full_response)} chars)")
+            logger.info("LLM 응답 생성 완료", extra={
+                "response_length": len(full_response)
+            })
 
             # 포맷팅
             formatted = re.sub(r'(\d+\.)\s+', r'\1\n\n', full_response)
@@ -107,7 +126,7 @@ async def chat_stream(
 
             formatted = re.sub(r'\n{4,}', '\n\n', formatted)
 
-            # ✅ 메시지 저장 (user_fk, source_chunk_ids, usage 포함!)
+            # 메시지 저장
             try:
                 user_supabase.client.table("messages").insert({
                     "user_id": user_id,
@@ -118,16 +137,22 @@ async def chat_stream(
                     "usage": {},
                     "created_at": datetime.utcnow().isoformat()
                 }).execute()
-                logger.info(f"✅ 메시지 저장 완료 (1회) - user_fk: {user_fk}, chunks: {len(source_chunk_ids)}")
-            except Exception as save_error:
-                logger.error(f"⚠️ 메시지 저장 실패: {str(save_error)}")
-                # 저장 실패해도 응답은 계속 진행
 
-            # ✅ 토큰 전송 (연결 끊김 체크)
+                logger.info("메시지 저장 완료", extra={
+                    "chunks_count": len(source_chunk_ids)
+                })
+            except Exception as save_error:
+                logger.error("메시지 저장 실패", extra={
+                    "error": str(save_error)
+                })
+
+            # 토큰 전송 (연결 끊김 체크)
+            logger.info("클라이언트로 전송 시작")
             for i, char in enumerate(formatted):
-                # 주기적으로 연결 상태 체크 (100자마다)
                 if i % 100 == 0 and await request.is_disconnected():
-                    logger.warning("⚠️ 클라이언트 연결 끊김 - 전송 중단")
+                    logger.warning("클라이언트 연결 끊김 - 전송 중단", extra={
+                        "sent_chars": i
+                    })
                     return
 
                 data = json.dumps({"token": char, "type": "token"}, ensure_ascii=False)
@@ -137,17 +162,21 @@ async def chat_stream(
 
             # 완료 신호
             yield f" {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-            logger.info(f"✅ 스트리밍 완료")
+            logger.info("스트리밍 완료", extra={
+                "total_chars": len(formatted)
+            })
 
         except asyncio.CancelledError:
-            logger.warning("⚠️ 스트리밍 취소됨 (클라이언트 연결 끊김)")
-            # 클라이언트가 이미 끊겼으므로 에러 메시지 전송 불필요
+            logger.warning("스트리밍 취소됨 (클라이언트 연결 끊김)")
             return
 
         except Exception as e:
-            logger.error(f"❌ 스트리밍 오류: {str(e)}", exc_info=True)
+            logger.error("스트리밍 오류 발생", extra={
+                "error": str(e),
+                "error_type": type(e).__name__
+            }, exc_info=True)
 
-            # ✅ 사용자 친화적 에러 메시지
+            # 사용자 친화적 에러 메시지
             error_msg = "죄송합니다. 일시적인 오류가 발생했습니다."
 
             if "timeout" in str(e).lower():
@@ -162,8 +191,7 @@ async def chat_stream(
             try:
                 yield f" {json.dumps({'type': 'error', 'error': error_msg}, ensure_ascii=False)}\n\n"
             except:
-                # yield 자체가 실패하면 로그만 남김
-                logger.error("❌ 에러 메시지 전송 실패")
+                logger.error("에러 메시지 전송 실패")
 
     return StreamingResponse(
         generate_stream(),
@@ -173,5 +201,6 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
             "Content-Type": "text/event-stream; charset=utf-8",
+            "X-Request-ID": request_id  # ✅ 응답 헤더에도 추가
         }
     )
