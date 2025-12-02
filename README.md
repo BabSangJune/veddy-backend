@@ -1,4 +1,7 @@
 # veddy-backend
+pip freeze > requirements.txt
+pip install -r requirements.txt
+
 python3 -m venv ~/.virtualenvs/veddy-backend
 source /home/june/.virtualenvs/veddy-backend/bin/activate
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
