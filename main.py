@@ -16,7 +16,7 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ✅ 로깅 설정 (가장 먼저!)
-from logging_config import setup_logging
+from logging_config import setup_logging, get_logger  # ✅ get_logger 추가
 setup_logging()
 
 from config import (
@@ -130,15 +130,120 @@ app.add_middleware(
 app.include_router(chat_router.router)
 app.include_router(teams_router.router)
 
+
+import psutil
+import time
+from datetime import datetime
+
 @app.get("/api/health")
 async def health_check():
-    logger.info("Health check 요청", extra={"endpoint": "/api/health"})
-    return {
+    """
+    상세 헬스체크
+    - DB 연결 상태
+    - 임베딩 모델 상태
+    - 시스템 리소스
+    """
+    start_time = time.time()
+
+    health_status = {
         "status": "healthy",
-        "message": "🏥 API 서버 정상 작동 중!",
+        "timestamp": datetime.utcnow().isoformat(),
         "environment": ENV,
-        "teams_enabled": True
+        "checks": {}
     }
+
+    # ✅ 1. Supabase 연결 체크
+    try:
+        is_connected = supabase_service.test_connection()
+        health_status["checks"]["database"] = {
+            "status": "up" if is_connected else "down",
+            "type": "supabase"
+        }
+    except Exception as e:
+        health_status["checks"]["database"] = {
+            "status": "down",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+
+    # ✅ 2. 임베딩 모델 체크
+    try:
+        from services.embedding_service import embedding_service
+        # 간단한 테스트 임베딩
+        test_embedding = embedding_service.embed_text("test")
+        health_status["checks"]["embedding_model"] = {
+            "status": "up",
+            "model": "BGE-m3-ko",
+            "dimension": len(test_embedding)
+        }
+    except Exception as e:
+        health_status["checks"]["embedding_model"] = {
+            "status": "down",
+            "error": str(e)
+        }
+        health_status["status"] = "degraded"
+
+    # ✅ 3. Teams 봇 상태
+    try:
+        from services.teams_service import teams_service
+        health_status["checks"]["teams_bot"] = {
+            "status": "configured",
+            "app_id": teams_service.app_id[:8] + "..."
+        }
+    except Exception as e:
+        health_status["checks"]["teams_bot"] = {
+            "status": "down",
+            "error": str(e)
+        }
+
+    # ✅ 4. 시스템 리소스
+    try:
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+
+        health_status["checks"]["system"] = {
+            "status": "up",
+            "memory": {
+                "total_gb": round(memory.total / (1024**3), 2),
+                "used_gb": round(memory.used / (1024**3), 2),
+                "available_gb": round(memory.available / (1024**3), 2),
+                "percent": memory.percent
+            },
+            "disk": {
+                "total_gb": round(disk.total / (1024**3), 2),
+                "used_gb": round(disk.used / (1024**3), 2),
+                "free_gb": round(disk.free / (1024**3), 2),
+                "percent": disk.percent
+            },
+            "cpu_percent": psutil.cpu_percent(interval=0.1)
+        }
+    except Exception as e:
+        health_status["checks"]["system"] = {
+            "status": "unknown",
+            "error": str(e)
+        }
+
+    # ✅ 5. 응답 시간
+    response_time = round((time.time() - start_time) * 1000, 2)  # ms
+    health_status["response_time_ms"] = response_time
+
+    # ✅ 로그
+    logger = get_logger(__name__)
+    logger.info("Health check 요청", extra={
+        "endpoint": "/api/health",
+        "status": health_status["status"],
+        "response_time_ms": response_time
+    })
+
+    # ✅ 상태 코드 결정
+    status_code = 200
+    if health_status["status"] == "degraded":
+        status_code = 503  # Service Unavailable
+    elif health_status["status"] == "down":
+        status_code = 503
+
+    return JSONResponse(content=health_status, status_code=status_code)
+
 
 @app.post("/api/test/embedding")
 async def test_embedding(text: str):
