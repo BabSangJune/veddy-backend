@@ -15,3 +15,8 @@ az containerapp update \
 az monitor log-analytics workspace show \
 --resource-group VESSELLINK_BOT_RESOURCE \
 --workspace-name log-veddy-prod
+
+az containerapp logs show \
+--name ca-veddy-backend \
+--resource-group VESSELLINK_BOT_RESOURCE \
+--follow
