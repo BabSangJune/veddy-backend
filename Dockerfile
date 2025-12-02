@@ -31,7 +31,9 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    ENV=production \
+    LOG_LEVEL=INFO
 
 # 애플리케이션 코드 복사
 COPY . .
@@ -43,5 +45,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # 포트 노출
 EXPOSE 8000
 
-# uvicorn 실행
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# ✅ gunicorn으로 실행 (멀티 워커)
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "main:app"]
