@@ -25,7 +25,7 @@ from config import (
     ALLOWED_ORIGINS,
     ENV,
     IS_PRODUCTION,
-    LOG_LEVEL
+    LOG_LEVEL,
 )
 
 from fastapi import FastAPI, HTTPException
@@ -77,17 +77,35 @@ async def lifespan(app: FastAPI):
             print(f"⚠️  임베딩 모델 워밍업 경고: {e}")
             logger.warning(f"임베딩 모델 워밍업 경고: {e}")
 
+        # 🆕 리랭커 모델 워밍업
+        print("🔍 리랭커 모델 워밍업 중...")
+        try:
+            from services.reranker_service import reranker_service
+            reranker_service.rerank(
+                query="테스트 쿼리",
+                chunks=[{"content": "테스트 문서 내용"}],
+                top_k=1,
+            )
+            print("✅ 리랭커 모델 준비 완료!")
+            logger.info("리랭커 모델 워밍업 완료")
+        except Exception as e:
+            print(f"⚠️  리랭커 모델 워밍업 경고: {e}")
+            logger.warning(f"리랭커 모델 워밍업 경고: {e}")
+
     print("- API 서버 시작")
     print("- Teams 봇 시작")
     if IS_PRODUCTION:
         print("- Swagger 문서 비활성화 (프로덕션 모드)")
     print(TITLE)
 
-    logger.info("VEDDY 서버 시작 완료", extra={
-        "environment": ENV,
-        "workers": os.getenv("GUNICORN_WORKERS"),
-        "swagger_enabled": not IS_PRODUCTION
-    })
+    logger.info(
+        "VEDDY 서버 시작 완료",
+        extra={
+            "environment": ENV,
+            "workers": os.getenv("GUNICORN_WORKERS"),
+            "swagger_enabled": not IS_PRODUCTION,
+        },
+    )
 
     yield  # 여기서 앱 실행
 
@@ -108,6 +126,7 @@ async def lifespan(app: FastAPI):
     print("👋 안녕히 가세요!")
     print(TITLE)
 
+
 # FastAPI 앱 생성
 app = FastAPI(
     title="VEDDY - Vessellink AI",
@@ -116,7 +135,7 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url=None if IS_PRODUCTION else "/docs",
     redoc_url=None if IS_PRODUCTION else "/redoc",
-    openapi_url=None if IS_PRODUCTION else "/openapi.json"
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
 )
 
 app.add_middleware(
@@ -149,7 +168,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "environment": ENV,
-        "checks": {}
+        "checks": {},
     }
 
     # ✅ 1. Supabase 연결 체크
@@ -157,49 +176,50 @@ async def health_check():
         is_connected = supabase_service.test_connection()
         health_status["checks"]["database"] = {
             "status": "up" if is_connected else "down",
-            "type": "supabase"
+            "type": "supabase",
         }
     except Exception as e:
         health_status["checks"]["database"] = {
             "status": "down",
-            "error": str(e)
+            "error": str(e),
         }
         health_status["status"] = "degraded"
 
     # ✅ 2. 임베딩 모델 체크
     try:
         from services.embedding_service import embedding_service
-        # 간단한 테스트 임베딩
+
         test_embedding = embedding_service.embed_text("test")
         health_status["checks"]["embedding_model"] = {
             "status": "up",
             "model": "BGE-m3-ko",
-            "dimension": len(test_embedding)
+            "dimension": len(test_embedding),
         }
     except Exception as e:
         health_status["checks"]["embedding_model"] = {
             "status": "down",
-            "error": str(e)
+            "error": str(e),
         }
         health_status["status"] = "degraded"
 
     # ✅ 3. Teams 봇 상태
     try:
         from services.teams_service import teams_service
+
         health_status["checks"]["teams_bot"] = {
             "status": "configured",
-            "app_id": teams_service.app_id[:8] + "..."
+            "app_id": teams_service.app_id[:8] + "...",
         }
     except Exception as e:
         health_status["checks"]["teams_bot"] = {
             "status": "down",
-            "error": str(e)
+            "error": str(e),
         }
 
     # ✅ 4. 시스템 리소스
     try:
         memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
+        disk = psutil.disk_usage("/")
 
         health_status["checks"]["system"] = {
             "status": "up",
@@ -207,20 +227,20 @@ async def health_check():
                 "total_gb": round(memory.total / (1024**3), 2),
                 "used_gb": round(memory.used / (1024**3), 2),
                 "available_gb": round(memory.available / (1024**3), 2),
-                "percent": memory.percent
+                "percent": memory.percent,
             },
             "disk": {
                 "total_gb": round(disk.total / (1024**3), 2),
                 "used_gb": round(disk.used / (1024**3), 2),
                 "free_gb": round(disk.free / (1024**3), 2),
-                "percent": disk.percent
+                "percent": disk.percent,
             },
-            "cpu_percent": psutil.cpu_percent(interval=0.1)
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
         }
     except Exception as e:
         health_status["checks"]["system"] = {
             "status": "unknown",
-            "error": str(e)
+            "error": str(e),
         }
 
     # ✅ 5. 응답 시간
@@ -229,16 +249,19 @@ async def health_check():
 
     # ✅ 로그
     logger = get_logger(__name__)
-    logger.info("Health check 요청", extra={
-        "endpoint": "/api/health",
-        "status": health_status["status"],
-        "response_time_ms": response_time
-    })
+    logger.info(
+        "Health check 요청",
+        extra={
+            "endpoint": "/api/health",
+            "status": health_status["status"],
+            "response_time_ms": response_time,
+        },
+    )
 
     # ✅ 상태 코드 결정
     status_code = 200
     if health_status["status"] == "degraded":
-        status_code = 503  # Service Unavailable
+        status_code = 503
     elif health_status["status"] == "down":
         status_code = 503
 
@@ -255,11 +278,12 @@ async def test_embedding(text: str):
             "text": text,
             "embedding_dimension": len(embedding),
             "embedding_sample": embedding[:5],
-            "status": "success"
+            "status": "success",
         }
     except Exception as e:
         logger.error(f"임베딩 테스트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/test/supabase")
 async def test_supabase():
@@ -268,11 +292,14 @@ async def test_supabase():
         is_connected = supabase_service.test_connection()
         if is_connected:
             documents = supabase_service.list_documents(limit=1)
-            logger.info("Supabase 테스트 성공", extra={"documents_count": len(documents)})
+            logger.info(
+                "Supabase 테스트 성공",
+                extra={"documents_count": len(documents)},
+            )
             return {
                 "status": "connected",
                 "message": "✅ Supabase 연결 성공!",
-                "documents_count": len(documents)
+                "documents_count": len(documents),
             }
         else:
             logger.error("Supabase 연결 실패")
@@ -281,35 +308,43 @@ async def test_supabase():
         logger.error(f"Supabase 테스트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/test/teams")
 async def test_teams():
     """Teams 봇 설정 테스트"""
     try:
         from services.teams_service import teams_service
+
         logger.info("Teams 설정 확인", extra={"app_id": teams_service.app_id[:8]})
         return {
             "status": "configured",
             "message": "✅ Teams 봇 설정 완료!",
             "app_id": teams_service.app_id[:8] + "...",
-            "endpoint": "/api/teams/messages"
+            "endpoint": "/api/teams/messages",
         }
     except Exception as e:
         logger.error(f"Teams 테스트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    logger.error(f"Global exception: {exc}", exc_info=True, extra={
-        "path": request.url.path,
-        "method": request.method
-    })
+    logger.error(
+        f"Global exception: {exc}",
+        exc_info=True,
+        extra={
+            "path": request.url.path,
+            "method": request.method,
+        },
+    )
     return JSONResponse(
         status_code=500,
         content={
             "detail": str(exc),
-            "status": "error"
-        }
+            "status": "error",
+        },
     )
+
 
 if __name__ == "__main__":
     import uvicorn

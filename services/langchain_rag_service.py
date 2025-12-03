@@ -15,7 +15,7 @@ from langchain.agents import create_agent
 
 from services.embedding_service import embedding_service
 from services.supabase_service import supabase_service, SupabaseService
-from config import OPENAI_API_KEY, VECTOR_SEARCH_CONFIG  # ✅ config 통합
+from config import OPENAI_API_KEY, VECTOR_SEARCH_CONFIG, VECTOR_SEARCH_CONFIG, RERANKER_CONFIG
 
 # ===== 커스텀 임베딩 래퍼 =====
 class CustomEmbeddings(Embeddings):
@@ -83,43 +83,66 @@ class SupabaseRetriever:
         except Exception as e:
             return f"검색 중 오류: {str(e)}", []
 
-    def search_hybrid(self, query: str) -> tuple[str, List[Dict]]:
+    def search_hybrid(self, query: str, use_reranking: bool = None) -> tuple[str, List[Dict]]:
         """
-        🆕 하이브리드 검색 (PGroonga + pgvector)
-        RPC 함수 호출
+        🆕 하이브리드 검색 (PGroonga + pgvector) + 리랭킹
         """
+        # 🆕 config에서 enabled 값 가져오기
+        if use_reranking is None:
+            use_reranking = RERANKER_CONFIG['enabled']
+
         try:
             # 1. 쿼리 임베딩 생성
             query_embedding = self.embeddings.embed_query(query)
 
-            # 2. Supabase RPC 호출 (hybrid_search_veddy 함수)
+            # 2. Supabase RPC 호출 (하이브리드 검색)
             response = self.supabase_client.client.rpc(
                 'hybrid_search_veddy',
                 {
                     'query_text': query,
                     'query_embedding': query_embedding,
-                    'match_count': self.k,
-                    'full_text_weight': 0.4,  # 키워드 40%
-                    'semantic_weight': 0.6    # 의미 60%
+                    'match_count': self.k * 2 if use_reranking else self.k,  # 리랭킹 시 2배
+                    'full_text_weight': 0.4,
+                    'semantic_weight': 0.6
                 }
             ).execute()
 
             if not response.data:
                 return "관련 문서를 찾을 수 없습니다.", []
 
-            # 3. 응답 포맷팅
             chunks = response.data
+
+            # 3. 🆕 리랭킹 적용
+            if use_reranking and len(chunks) > 1:
+                from services.reranker_service import reranker_service
+
+                print(f"🔍 리랭킹 전 청크 수: {len(chunks)}")
+                chunks = reranker_service.rerank(
+                    query=query,
+                    chunks=chunks,
+                    top_k=RERANKER_CONFIG['top_k']  # 🆕 config에서 top_k 사용
+                )
+                print(f"✅ 리랭킹 후 청크 수: {len(chunks)}")
+
+            # 4. 응답 포맷팅
             context_parts = []
 
             for i, chunk in enumerate(chunks, 1):
                 title = chunk.get('title', '제목 없음')
                 content = chunk.get('content', '')
                 source = chunk.get('source', '출처 미상')
-                score = chunk.get('score', 0.0)
+
+                # 🆕 리랭크 점수 표시
+                if 'rerank_score' in chunk:
+                    score = chunk.get('rerank_score', 0.0)
+                    score_label = f"리랭크: {score:.4f}"
+                else:
+                    score = chunk.get('score', 0.0)
+                    score_label = f"관련도: {score:.4f}"
 
                 context_parts.append(
                     f"[문서 {i}] {title}\n"
-                    f"관련도: {score:.4f}\n"
+                    f"{score_label}\n"
                     f"출처: {source}\n"
                     f"내용:\n{content}"
                 )
@@ -129,7 +152,10 @@ class SupabaseRetriever:
 
         except Exception as e:
             print(f"❌ 하이브리드 검색 오류: {e}")
+            import traceback
+            traceback.print_exc()
             return f"검색 중 오류: {str(e)}", []
+
 
 # ===== 베디 프롬프트 템플릿 =====
 VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베디(VEDDY)'야.

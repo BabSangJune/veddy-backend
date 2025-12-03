@@ -96,3 +96,13 @@ def get_vector_search_config():
     return base_config
 
 VECTOR_SEARCH_CONFIG = get_vector_search_config()
+
+# ==========================================
+# 리랭커 설정
+# ==========================================
+RERANKER_CONFIG = {
+    'model_name': 'dragonkue/bge-reranker-v2-m3-ko',
+    'max_length': 512,
+    'enabled': True,  # 리랭킹 활성화 여부
+    'top_k': 5  # 최종 반환 개수
+}
