@@ -83,6 +83,54 @@ class SupabaseRetriever:
         except Exception as e:
             return f"검색 중 오류: {str(e)}", []
 
+    def search_hybrid(self, query: str) -> tuple[str, List[Dict]]:
+        """
+        🆕 하이브리드 검색 (PGroonga + pgvector)
+        RPC 함수 호출
+        """
+        try:
+            # 1. 쿼리 임베딩 생성
+            query_embedding = self.embeddings.embed_query(query)
+
+            # 2. Supabase RPC 호출 (hybrid_search_veddy 함수)
+            response = self.supabase_client.client.rpc(
+                'hybrid_search_veddy',
+                {
+                    'query_text': query,
+                    'query_embedding': query_embedding,
+                    'match_count': self.k,
+                    'full_text_weight': 0.4,  # 키워드 40%
+                    'semantic_weight': 0.6    # 의미 60%
+                }
+            ).execute()
+
+            if not response.data:
+                return "관련 문서를 찾을 수 없습니다.", []
+
+            # 3. 응답 포맷팅
+            chunks = response.data
+            context_parts = []
+
+            for i, chunk in enumerate(chunks, 1):
+                title = chunk.get('title', '제목 없음')
+                content = chunk.get('content', '')
+                source = chunk.get('source', '출처 미상')
+                score = chunk.get('score', 0.0)
+
+                context_parts.append(
+                    f"[문서 {i}] {title}\n"
+                    f"관련도: {score:.4f}\n"
+                    f"출처: {source}\n"
+                    f"내용:\n{content}"
+                )
+
+            formatted_context = "\n\n---\n\n".join(context_parts)
+            return formatted_context, chunks
+
+        except Exception as e:
+            print(f"❌ 하이브리드 검색 오류: {e}")
+            return f"검색 중 오류: {str(e)}", []
+
 # ===== 베디 프롬프트 템플릿 =====
 VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베디(VEDDY)'야.
 

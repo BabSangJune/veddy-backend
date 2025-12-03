@@ -68,12 +68,14 @@ async def chat_stream(
             async def rag_with_timeout():
                 nonlocal full_response, source_chunk_ids
 
-                # RAG 처리 전에 먼저 문서 검색하여 source_chunk_ids 추출
+                # ========================================
+                # Step 1: 🆕 하이브리드 검색 실행
+                # ========================================
                 from services.embedding_service import embedding_service
                 from services.langchain_rag_service import SupabaseRetriever, CustomEmbeddings
 
-                # 검색 수행
-                logger.info("벡터 검색 시작")
+                logger.info("하이브리드 검색 시작 (PGroonga + pgvector)")
+
                 embeddings = CustomEmbeddings()
                 retriever = SupabaseRetriever(
                     embeddings=embeddings,
@@ -81,15 +83,23 @@ async def chat_stream(
                     k=5,
                     threshold=0.3
                 )
-                _, raw_chunks = retriever.search(request_body.query)
+
+                # ✅ 하이브리드 검색 호출
+                _, raw_chunks = retriever.search_hybrid(request_body.query)
+
+                # ✅ source_chunk_ids 추출 (1번만!)
                 source_chunk_ids = [chunk.get('id') for chunk in raw_chunks if chunk.get('id')]
 
-                logger.info("벡터 검색 완료", extra={
-                    "chunks_found": len(source_chunk_ids)
+                logger.info("하이브리드 검색 완료", extra={
+                    "chunks_found": len(source_chunk_ids),
+                    "search_mode": "PGroonga + pgvector (RRF)"
                 })
 
-                # RAG 처리 (순수 응답만 반환)
+                # ========================================
+                # Step 2: 🤖 LLM 응답 생성 (스트리밍)
+                # ========================================
                 logger.info("LLM 응답 생성 시작")
+
                 for token in langchain_rag_service.process_query_streaming(
                         user_id=user_id,
                         query=request_body.query,
@@ -104,7 +114,11 @@ async def chat_stream(
                     if token:
                         full_response += token
 
-            # 타임아웃 적용
+                logger.info("LLM 응답 생성 완료", extra={
+                    "response_length": len(full_response)
+                })
+
+            # 타임아웃 적용 (120초)
             try:
                 await asyncio.wait_for(rag_with_timeout(), timeout=120.0)
             except asyncio.TimeoutError:
@@ -112,11 +126,9 @@ async def chat_stream(
                 yield f" {json.dumps({'type': 'error', 'error': '요청 처리 시간이 초과되었습니다. 다시 시도해 주세요.'}, ensure_ascii=False)}\n\n"
                 return
 
-            logger.info("LLM 응답 생성 완료", extra={
-                "response_length": len(full_response)
-            })
-
-            # 포맷팅
+            # ========================================
+            # Step 3: 📝 응답 포맷팅
+            # ========================================
             formatted = re.sub(r'(\d+\.)\s+', r'\1\n\n', full_response)
             formatted = re.sub(r'(#{1,3})\s+([^\n]+)', r'\1 \2\n\n', formatted)
             formatted = re.sub(r'(-\s+[^\n]+)', r'\1\n', formatted)
@@ -126,7 +138,9 @@ async def chat_stream(
 
             formatted = re.sub(r'\n{4,}', '\n\n', formatted)
 
-            # 메시지 저장
+            # ========================================
+            # Step 4: 💾 메시지 저장 (DB)
+            # ========================================
             try:
                 user_supabase.client.table("messages").insert({
                     "user_id": user_id,
@@ -146,8 +160,11 @@ async def chat_stream(
                     "error": str(save_error)
                 })
 
-            # 토큰 전송 (연결 끊김 체크)
+            # ========================================
+            # Step 5: 📤 클라이언트로 전송 (SSE)
+            # ========================================
             logger.info("클라이언트로 전송 시작")
+
             for i, char in enumerate(formatted):
                 if i % 100 == 0 and await request.is_disconnected():
                     logger.warning("클라이언트 연결 끊김 - 전송 중단", extra={
@@ -162,8 +179,10 @@ async def chat_stream(
 
             # 완료 신호
             yield f" {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+
             logger.info("스트리밍 완료", extra={
-                "total_chars": len(formatted)
+                "total_chars": len(formatted),
+                "status": "success"
             })
 
         except asyncio.CancelledError:
@@ -185,6 +204,8 @@ async def chat_stream(
                 error_msg = "네트워크 연결에 문제가 발생했습니다."
             elif "embedding" in str(e).lower():
                 error_msg = "문서 검색 중 오류가 발생했습니다."
+            elif "hybrid" in str(e).lower():
+                error_msg = "하이브리드 검색 중 오류가 발생했습니다."
 
             error_msg += " 잠시 후 다시 시도해 주세요."
 
