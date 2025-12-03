@@ -121,26 +121,31 @@ class SupabaseService:
             raise
 
     def search_chunks(self, embedding: List[float], limit: int = 5,
-                      threshold: float = 0.2) -> List[Dict[str, Any]]:
+                      threshold: float = 0.2, ef_search: int = 50) -> List[Dict[str, Any]]:
         """
-        벡터 유사도 검색 (URL 포함)
+        벡터 유사도 검색 (HNSW ef_search 지원)
 
         Args:
             embedding: 쿼리 임베딩 벡터
             limit: 반환할 최대 결과 수
             threshold: 유사도 임계값 (0~1)
+            ef_search: HNSW 검색 품질 파라미터 (20~100)
+                       20-30: 빠른 검색
+                       50-60: 균형 (기본 추천)
+                       80-100: 정확도 우선
 
         Returns:
             검색된 청크 목록
         """
         try:
-            logger.info(f"🔍 검색 시작 (limit={limit}, threshold={threshold})")
+            logger.info(f"🔍 검색 시작 (limit={limit}, threshold={threshold}, ef_search={ef_search})")
 
-            # RPC 호출
+            # RPC 호출 (ef_search 파라미터 추가)
             response = self.client.rpc('match_documents', {
                 'query_embedding': embedding,
                 'match_count': limit,
-                'match_threshold': threshold
+                'match_threshold': threshold,
+                'ef_search_value': ef_search  # ✅ 추가
             }).execute()
 
             # response.data 추출
@@ -153,49 +158,31 @@ class SupabaseService:
             logger.info(f"✅ RPC 응답: {len(data)}개")
 
             results = []
-
             for i, item in enumerate(data, 1):
                 chunk_id = item.get('id')
                 doc_id = item.get('document_id')
                 content = item.get('content', '')
                 similarity = item.get('similarity', 0.0)
+                title = item.get('title', '제목 없음')
+                source = item.get('source', 'confluence')
+                metadata = item.get('metadata', {})
 
-                logger.debug(f"  [{i}] chunk_id={chunk_id}, doc_id={doc_id}, sim={similarity:.3f}")
+                logger.debug(f" [{i}] chunk_id={chunk_id}, doc_id={doc_id}, sim={similarity:.3f}")
 
-                # 기본 청크 정보
+                # 청크 데이터 구성
                 chunk_data = {
                     'id': chunk_id,
                     'document_id': doc_id,
                     'content': content,
                     'similarity': similarity,
-                    'title': '제목 없음',
-                    'source': 'confluence',
-                    'url': '',
-                    'metadata': {}
+                    'title': title,
+                    'source': source,
+                    'url': metadata.get('url') or metadata.get('page_url', ''),
+                    'metadata': metadata
                 }
 
-                # 문서 정보 가져오기
-                if doc_id:
-                    try:
-                        doc_response = self.client.table('documents').select(
-                            'id, title, source, metadata'
-                        ).eq('id', doc_id).single().execute()
-
-                        if doc_response and doc_response.data:
-                            doc_data = doc_response.data
-                            metadata = doc_data.get('metadata', {})
-
-                            chunk_data['title'] = doc_data.get('title', '제목 없음')
-                            chunk_data['source'] = doc_data.get('source', 'confluence')
-                            chunk_data['url'] = metadata.get('url') or metadata.get('page_url', '')
-                            chunk_data['metadata'] = metadata
-
-                            logger.debug(f"      ✅ 제목: {chunk_data['title']}")
-                            if chunk_data['url']:
-                                logger.debug(f"      🔗 URL: {chunk_data['url']}")
-
-                    except Exception as doc_error:
-                        logger.warning(f"      ⚠️ 문서 정보 조회 실패: {doc_error}")
+                if chunk_data['url']:
+                    logger.debug(f" 🔗 URL: {chunk_data['url']}")
 
                 results.append(chunk_data)
 
@@ -207,6 +194,7 @@ class SupabaseService:
             import traceback
             traceback.print_exc()
             return []
+
 
     # ==================== messages ====================
 

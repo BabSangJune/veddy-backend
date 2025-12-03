@@ -33,11 +33,13 @@ class CustomEmbeddings(Embeddings):
 class SupabaseRetriever:
     """Supabase 검색 래퍼 (URL 포함)"""
 
-    def __init__(self, embeddings: Embeddings, supabase_client: SupabaseService, k: int = 5, threshold: float = 0.3):
+    def __init__(self, embeddings: Embeddings, supabase_client: SupabaseService,
+                 k: int = 5, threshold: float = 0.3, ef_search: int = 50):
         self.embeddings = embeddings
         self.supabase_client = supabase_client
         self.k = k
         self.threshold = threshold
+        self.ef_search = ef_search  # ✅ 추가
 
     def search(self, query: str) -> tuple[str, List[Dict]]:
         """문서 검색 실행 (URL 완벽 보존)"""
@@ -46,7 +48,8 @@ class SupabaseRetriever:
             chunks = self.supabase_client.search_chunks(
                 embedding=query_embedding,
                 limit=self.k,
-                threshold=self.threshold
+                threshold=self.threshold,
+                ef_search=self.ef_search  # ✅ 추가
             )
 
             if not chunks:
@@ -60,7 +63,7 @@ class SupabaseRetriever:
                 url = chunk.get('url', '')
                 similarity = chunk.get('similarity', 0.0)
 
-                # ✅ URL 보존 (절대 삭제 금지)
+                # ✅ URL 보존
                 url_section = ""
                 if url and url.strip():
                     url_section = f"\n📍 출처: {source}\n🔗 URL: {url}"
