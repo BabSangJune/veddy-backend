@@ -4,6 +4,7 @@ from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
 from config import SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY
 from unicodedata import normalize as unicode_normalize
+from config import VECTOR_SEARCH_CONFIG
 import logging
 
 logger = logging.getLogger(__name__)
@@ -121,43 +122,44 @@ class SupabaseService:
             raise
 
     def search_chunks(self, embedding: List[float], limit: int = 5,
-                      threshold: float = 0.2, ef_search: int = 50) -> List[Dict[str, Any]]:
+                      threshold: float = None, ef_search: int = None) -> List[Dict[str, Any]]:
         """
-        벡터 유사도 검색 (HNSW ef_search 지원)
-
-        Args:
-            embedding: 쿼리 임베딩 벡터
-            limit: 반환할 최대 결과 수
-            threshold: 유사도 임계값 (0~1)
-            ef_search: HNSW 검색 품질 파라미터 (20~100)
-                       20-30: 빠른 검색
-                       50-60: 균형 (기본 추천)
-                       80-100: 정확도 우선
-
-        Returns:
-            검색된 청크 목록
+        벡터 유사도 검색 (config 기반 + 성능 모니터링)
         """
+        import time  # ✅ 시간 측정용
+
+        # ✅ config에서 기본값 자동 적용
+        config_threshold = VECTOR_SEARCH_CONFIG['similarity_threshold']
+        config_ef_search = VECTOR_SEARCH_CONFIG['ef_search']
+
+        threshold = threshold or config_threshold  # None이면 config 사용
+        ef_search = ef_search or config_ef_search
+
+        start_time = time.time()  # ✅ 성능 측정 시작
+
         try:
-            logger.info(f"🔍 검색 시작 (limit={limit}, threshold={threshold}, ef_search={ef_search})")
+            logger.info(f"🔍 검색 시작 | ef={ef_search} | threshold={threshold} | limit={limit}")
 
-            # RPC 호출 (ef_search 파라미터 추가)
+            # RPC 호출
             response = self.client.rpc('match_documents', {
                 'query_embedding': embedding,
                 'match_count': limit,
                 'match_threshold': threshold,
-                'ef_search_value': ef_search  # ✅ 추가
+                'ef_search_value': ef_search
             }).execute()
 
-            # response.data 추출
             data = response.data if hasattr(response, 'data') else response
 
             if not data:
-                logger.warning("⚠️ 검색 결과 없음")
+                elapsed = (time.time() - start_time) * 1000
+                logger.warning(f"⚠️ 검색 결과 없음 | ef={ef_search} | 시간={elapsed:.2f}ms")
                 return []
 
             logger.info(f"✅ RPC 응답: {len(data)}개")
 
             results = []
+            similarities = []
+
             for i, item in enumerate(data, 1):
                 chunk_id = item.get('id')
                 doc_id = item.get('document_id')
@@ -167,9 +169,8 @@ class SupabaseService:
                 source = item.get('source', 'confluence')
                 metadata = item.get('metadata', {})
 
-                logger.debug(f" [{i}] chunk_id={chunk_id}, doc_id={doc_id}, sim={similarity:.3f}")
+                similarities.append(similarity)  # ✅ 평균 계산용
 
-                # 청크 데이터 구성
                 chunk_data = {
                     'id': chunk_id,
                     'document_id': doc_id,
@@ -181,16 +182,22 @@ class SupabaseService:
                     'metadata': metadata
                 }
 
-                if chunk_data['url']:
-                    logger.debug(f" 🔗 URL: {chunk_data['url']}")
-
                 results.append(chunk_data)
 
-            logger.info(f"✅ 최종 결과: {len(results)}개 반환")
+            # ✅ 성능 통계 계산
+            elapsed = (time.time() - start_time) * 1000  # ms
+            avg_similarity = sum(similarities) / len(similarities) if similarities else 0
+
+            # ✅ 모니터링 로그 (config 기반)
+            logger.info(f"✅ 검색 완료 | ef_search={ef_search} | "
+                        f"시간={elapsed:.2f}ms | 결과={len(results)}개 | "
+                        f"평균유사도={avg_similarity:.3f}")
+
             return results
 
         except Exception as e:
-            logger.error(f"❌ 검색 오류: {e}")
+            elapsed = (time.time() - start_time) * 1000
+            logger.error(f"❌ 검색 실패 | ef={ef_search} | 시간={elapsed:.2f}ms | 오류={str(e)}")
             import traceback
             traceback.print_exc()
             return []

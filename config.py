@@ -43,7 +43,7 @@ CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN")
 CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY")
 
 # ==========================================
-# CORS - 프론트엔드 도메인
+# CORS
 # ==========================================
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
@@ -51,7 +51,7 @@ ALLOWED_ORIGINS = os.getenv(
 ).split(",")
 
 # ==========================================
-# Gunicorn (프로덕션 전용)
+# Gunicorn
 # ==========================================
 GUNICORN_WORKERS = int(os.getenv("GUNICORN_WORKERS", 4))
 
@@ -62,25 +62,37 @@ MICROSOFT_APP_ID = os.getenv("MICROSOFT_APP_ID")
 MICROSOFT_APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD")
 MICROSOFT_TENANT_ID = os.getenv("MICROSOFT_TENANT_ID")
 
-
-import logging
-
 # ==========================================
 # 로깅 설정
 # ==========================================
-
-# 기본 로깅 레벨
+import logging
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# ✅ httpcore, hpack DEBUG 로그 끄기 (프로덕션)
 if IS_PRODUCTION:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("hpack").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 else:
-    # 개발 모드에서는 DEBUG 유지 (필요 시)
     logging.getLogger("httpcore").setLevel(logging.INFO)
     logging.getLogger("hpack").setLevel(logging.INFO)
+
+# ==========================================
+# 동적 VECTOR_SEARCH_CONFIG
+# ==========================================
+def get_vector_search_config():
+    """환경별 최적 config 반환"""
+    base_config = {
+        'ef_search': int(os.getenv("VECTOR_EF_SEARCH", "50")),
+        'chunk_tokens': int(os.getenv("VECTOR_CHUNK_TOKENS", "400")),
+        'overlap_tokens': int(os.getenv("VECTOR_OVERLAP_TOKENS", "50")),
+        'min_chunk_tokens': int(os.getenv("VECTOR_MIN_CHUNK_TOKENS", "30")),
+        'similarity_threshold': float(os.getenv("VECTOR_SIMILARITY_THRESHOLD", "0.3"))
+    }
+
+    print(f"📊 VECTOR_SEARCH_CONFIG 로드 | ENV={ENV} | ef_search={base_config['ef_search']}")
+    return base_config
+
+VECTOR_SEARCH_CONFIG = get_vector_search_config()
