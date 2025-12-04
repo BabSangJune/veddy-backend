@@ -49,7 +49,13 @@ class SupabaseRetriever:
         logger.info(f"Retriever 초기화 | k={self.k} | threshold={self.threshold} | ef_search={self.ef_search}")
 
     def _get_chunk_url(self, chunk: Dict) -> str:
-        """✅ 청크에서 URL 추출 (3가지 방법 시도)"""
+        """✅ 청크에서 URL 추출 (3가지 방법 시도)
+
+        1. chunk에 url 필드가 직접 있으면 사용
+        2. chunk의 metadata에서 파싱
+        3. document_id로 documents 테이블에서 조회
+        """
+
         # 1. chunk에 url 필드가 직접 있으면
         if chunk.get('url') and chunk.get('url').strip():
             return chunk.get('url')
@@ -234,45 +240,30 @@ class SupabaseRetriever:
 
 # ===== 베디 프롬프트 템플릿 (완전 개선) =====
 
-# 시스템 프롬프트 (할루시네이션 방지 강화)
 VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베디(VEDDY)'야.
 
 ## 너의 역할과 정체성
 
 이름: 베디 (Vessellink's Buddy)
-
 성격: 친절하고 신뢰할 수 있으며, 온순하고 성실함
-
 목표: 베슬링크 직원들의 업무 효율화와 정보 접근성 개선
-
 전문성: 사내 문서(Confluence 위키, 규정, 매뉴얼)에 기반한 정확한 답변
 
 ## ⚠️ 할루시네이션 방지 (CRITICAL)
 
 ✅ 반드시 따르세요:
-
 1. 검색된 문서에 있는 정보만 답변하세요
 2. 문서에 없는 정보는 절대 추가하지 마세요
 3. 불확실하면 "문서에서 확인할 수 없습니다" 명시
 4. 베슬링크 관련 정보는 검색 결과만 신뢰하세요
 
 ❌ 절대 하지 마세요:
-
 - "아마도 ~일 것 같습니다"
 - "일반적으로는 ~입니다"
 - "베슬링크에서는 ~을 지원할 것 같습니다"
 - 문서에 없는 추가 설명/해석
 
-✅ 이렇게 하세요:
-
-- "검색된 문서에 따르면 ~입니다"
-- "명시되어 있는 바는 ~입니다"
-- "해당 정보는 검색된 문서에서 확인할 수 없습니다"
-- "추가 정보는 [팀명] 팀에 문의하세요"
-
 ## 답변 포맷 규칙 (반드시 준수)
-
-【답변 포맷 - 필수】
 
 **제목** (한 줄)
 
@@ -282,29 +273,18 @@ VEDDY_SYSTEM_PROMPT = """너는 베슬링크의 내부 AI 어시스턴트 '베�
 
 3. 세 번째 포인트
 
-(필요에 따라 추가)
-
 【URL 및 참고 문서】
 
 📚 참고 문서:
-
 - 문서명 > 섹션명
   URL: https://[전체경로]
-
-- 다른 문서명 > 섹션명
-  URL: https://[전체경로]
-
-(URL이 없으면 "출처: [문서명]")"""
+"""
 
 TABLE_MODE_PROMPT = """
 🚨 표 형식 답변 모드 활성화 - 절대 준수 🚨
 
-**사용자가 표 모드를 활성화했습니다. 다음 규칙을 반드시 따르세요:**
-
 1. 답변의 첫 줄은 제목만 작성
-
 2. 제목 다음 줄부터 즉시 마크다운 표 시작
-
 3. 번호 리스트(1., 2., 3.)는 절대 사용 금지
 
 【표 포맷 예시】
@@ -313,13 +293,8 @@ TABLE_MODE_PROMPT = """
 |------|------|
 | 첫 번째 | 내용 |
 | 두 번째 | 내용 |
+"""
 
-【URL 포함】
-
-- 각 행에 참고 URL이 있으면 추가
-- 표 아래에 참고 문서 섹션 추가"""
-
-# 개선된 USER_MESSAGE_TEMPLATE (할루시네이션 방지 강화, URL 보존 강화)
 USER_MESSAGE_TEMPLATE = """【이전 대화 맥락】
 {history}
 
@@ -332,19 +307,15 @@ USER_MESSAGE_TEMPLATE = """【이전 대화 맥락】
 【⚠️ 할루시네이션 방지 - CRITICAL】
 
 ✅ 반드시 따르세요:
-
 1. 검색된 문서의 정보만 사용하세요
 2. 문서에 없으면 "확인할 수 없습니다" 명시
 3. 불확실한 정보는 추가하지 마세요
-4. 베슬링크 지원 여부는 검색 결과만 신뢰
-5. URL은 반드시 전체경로 포함
+4. URL은 반드시 전체경로 포함
 
 ❌ 절대 하지 마세요:
-
 - "아마도 ~일 것입니다"
 - "일반적으로 ~합니다"
 - 문서에 없는 정보 추가
-- URL 줄임말 사용 (https://... 형태는 금지)
 
 【답변 포맷 - 필수 준수】
 
@@ -356,24 +327,12 @@ USER_MESSAGE_TEMPLATE = """【이전 대화 맥락】
 
 3. 세 번째 포인트
 
-(필요에 따라 4, 5... 추가)
-
 【URL 및 참고 문서 - 필수】
 
 📚 참고 문서:
-
 - 문서명 > 섹션명
-  URL: https://[전체경로/유지]
+  URL: https://[전체경로/유지]"""
 
-- 다른 문서명 > 섹션명
-  URL: https://[전체경로/유지]
-
-(URL이 없으면 "출처: [문서명]")
-
-【마지막 확인】
-혹시 더 궁금한 점이 있으신가요?"""
-
-# 개선된 TABLE_USER_MESSAGE_TEMPLATE
 TABLE_USER_MESSAGE_TEMPLATE = """【검색된 문서】
 {context}
 
@@ -385,24 +344,10 @@ TABLE_USER_MESSAGE_TEMPLATE = """【검색된 문서】
 반드시 마크다운 표 형식으로 답변하세요.
 
 【할루시네이션 방지】
-
 - 검색된 문서의 정보만 사용
 - 문서에 없으면 "확인할 수 없음" 표기
-- URL 전체경로 유지 (절대 줄이지 말 것)
+- URL 전체경로 유지 (절대 줄이지 말 것)"""
 
-【표 포맷 예시】
-
-| 항목 | 설명 |
-|------|------|
-| 내용1 | 설명1 |
-| 내용2 | 설명2 |
-
-【참고 문서】
-
-- 문서명 > 섹션명
-  URL: https://[전체경로]"""
-
-# 비교 모드 프롬프트 - COMPARISON_CONTEXT_TEMPLATE
 COMPARISON_CONTEXT_TEMPLATE = """【이전 대화 맥락】
 {history}
 
@@ -415,7 +360,6 @@ COMPARISON_CONTEXT_TEMPLATE = """【이전 대화 맥락】
 【질문 의도】
 사용자가 여러 항목을 비교하고 있습니다. 검색된 문서 기반으로만 비교하세요."""
 
-# 비교 모드 프롬프트 - COMPARISON_USER_TEMPLATE (할루시네이션 방지 강화)
 COMPARISON_USER_TEMPLATE = """【검색된 문서】
 {context}
 
@@ -429,36 +373,12 @@ COMPARISON_USER_TEMPLATE = """【검색된 문서】
 
 ❌ 할루시네이션 방지:
 - 각 항목은 검색된 문서만 사용
-- 문서에 없는 비교는 절대 추가 금지
-- 불명확하면 "문서에서 확인할 수 없음" 표기
-
-【포맷】
-
-**항목1 vs 항목2** (비교 제목)
-
-1. 항목1
-   - 정의: [검색 결과]
-   - 지원: [검색 결과]
-
-2. 항목2
-   - 정의: [검색 결과]
-   - 지원: [검색 결과]
-
-3. 비교 요약
-   - 공통점: [검색 결과]
-   - 차이점: [검색 결과]
-
-【참고 문서】
-
-- 문서명 > 섹션명
-  URL: https://[전체경로]
-
-질문: {query}"""
+- 문서에 없는 비교는 절대 추가 금지"""
 
 # ===== LangChain 1.0 RAG 서비스 (완전 개선) =====
 
 class LangChainRAGService:
-    """LangChain 1.0 기반 RAG 서비스 (Phase 3-A 완전 개선)"""
+    """LangChain 1.0 기반 RAG 서비스 (Phase 3-A Final 완전 완성)"""
 
     def __init__(self):
         """Agent 초기화"""
@@ -496,7 +416,7 @@ class LangChainRAGService:
         # 4. Retriever 싱글톤
         self._retriever = None
 
-        logger.info("✅ LangChain 1.0 RAG Service 초기화 완료 (프롬프트 완전 개선 + URL 자동 추가)")
+        logger.info("✅ LangChain 1.0 RAG Service 초기화 완료 (프롬프트 완전 개선 + URL 자동 추가 + History)")
 
     @property
     def retriever(self) -> SupabaseRetriever:
@@ -539,64 +459,6 @@ class LangChainRAGService:
         # 5. 최종 정리
         return '\n'.join(lines).strip()
 
-    def process_query(
-            self,
-            user_id: str,
-            query: str,
-            table_mode: bool = False,
-            supabase_client: Optional[SupabaseService] = None,
-            history: str = None,
-            comparison_info: dict = None
-    ) -> Dict[str, Any]:
-        """RAG 쿼리 처리 (history, comparison_info 지원)"""
-        try:
-            client = supabase_client if supabase_client else supabase_service
-
-            if comparison_info is None:
-                comparison_info = {"is_comparison": False, "topics": []}
-
-            # 항상 하이브리드 검색
-            if comparison_info.get("is_comparison") and comparison_info.get("topics"):
-                context_text, raw_chunks = self.retriever.search_multi_topic(
-                    query,
-                    comparison_info["topics"]
-                )
-                prompt_template = self.comparison_prompt_template
-                topics_str = ", ".join(comparison_info["topics"])
-                logger.info("비교 모드 검색", extra={"topics": topics_str})
-            else:
-                context_text, raw_chunks = self.retriever.search_hybrid(query)
-                prompt_template = self.table_prompt_template if table_mode else self.base_prompt_template
-                topics_str = ""
-                logger.info("일반 모드 검색", extra={"table_mode": table_mode})
-
-            # 포맷
-            messages = self._safe_format(
-                prompt_template,
-                context=context_text,
-                query=query,
-                history=history or "",
-                topics=topics_str
-            )
-
-            response = self.llm.invoke(messages)
-            ai_response = self._normalize_response(response.content)
-
-            # 소스 ID 추출
-            source_chunk_ids = [chunk.get('id') for chunk in raw_chunks if chunk.get('id')]
-
-            return {
-                "user_query": query,
-                "ai_response": ai_response,
-                "source_chunks": raw_chunks,
-                "source_chunk_ids": source_chunk_ids,
-                "usage": {}
-            }
-
-        except Exception as e:
-            logger.error(f"RAG 처리 중 오류: {e}", exc_info=True)
-            raise
-
     def process_query_streaming(
             self,
             user_id: str,
@@ -606,7 +468,7 @@ class LangChainRAGService:
             history: str = None,
             comparison_info: dict = None
     ) -> Generator[str, None, None]:
-        """RAG 스트리밍 응답 (완전 개선 - history, comparison_info 지원, 항상 하이브리드, URL 자동 추가)"""
+        """RAG 스트리밍 응답 (완전 개선 - history, comparison_info 지원)"""
 
         try:
             client = supabase_client if supabase_client else supabase_service

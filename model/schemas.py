@@ -30,13 +30,25 @@ class Chunk(ChunkCreate):
     created_at: datetime
 
 class ChatRequest(BaseModel):
-    """채팅 요청"""
+    """채팅 요청 (✅ Phase 3-A Final)"""
     user_id: str = Field(..., min_length=1)
     query: str = Field(..., min_length=1, max_length=1000)
     table_mode: bool = Field(
         default=False,
         description="표 형식 답변 모드 활성화 (True: 마크다운 표 우선, False: 일반 답변)"
-    )  # 🆕 표 모드 필드 추가
+    )
+
+    # ✅ 새로 추가 (Phase 3-A Final)
+    history: Optional[str] = Field(
+        default=None,
+        max_length=5000,
+        description="이전 대화 맥락 (없으면 DB에서 자동 조회)"
+    )
+
+    comparison_info: Optional[Dict] = Field(
+        default=None,
+        description="비교 모드 정보 (예: {'is_comparison': True, 'topics': ['A', 'B']})"
+    )
 
 class ChatResponse(BaseModel):
     """채팅 응답"""
