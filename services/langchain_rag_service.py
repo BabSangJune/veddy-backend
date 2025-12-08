@@ -413,6 +413,12 @@ class LangChainRAGService:
             ("user", COMPARISON_CONTEXT_TEMPLATE + "\n\n" + COMPARISON_USER_TEMPLATE)
         ])
 
+        # 비교 + 테이블 하이브리드 프롬프트
+        self.comparison_table_prompt_template = ChatPromptTemplate.from_messages([
+            ("system", VEDDY_SYSTEM_PROMPT + TABLE_MODE_PROMPT),
+            ("user", COMPARISON_CONTEXT_TEMPLATE + "\n\n" + COMPARISON_USER_TEMPLATE)
+        ])
+
         # 4. Retriever 싱글톤
         self._retriever = None
 
@@ -459,6 +465,7 @@ class LangChainRAGService:
         # 5. 최종 정리
         return '\n'.join(lines).strip()
 
+    # services/langchain_rag_service.py
     def process_query_streaming(
             self,
             user_id: str,
@@ -466,9 +473,16 @@ class LangChainRAGService:
             table_mode: bool = False,
             supabase_client: Optional[SupabaseService] = None,
             history: str = None,
-            comparison_info: dict = None
+            comparison_info: dict = None,
+            conversation_context: List[Dict] = None  # ✅ 추가
     ) -> Generator[str, None, None]:
-        """RAG 스트리밍 응답 (완전 개선 - history, comparison_info 지원)"""
+        """
+        RAG 스트리밍 응답 (테이블 모드 + 비교 모드 조합 가능)
+
+        아키텍처:
+        1️⃣ Step 1: 검색 방식 결정 (mode 기반) → context 생성
+        2️⃣ Step 2: 프롬프트 선택 (table_mode 기반) → 독립적 적용
+        """
 
         try:
             client = supabase_client if supabase_client else supabase_service
@@ -476,43 +490,106 @@ class LangChainRAGService:
             if comparison_info is None:
                 comparison_info = {"is_comparison": False, "topics": []}
 
-            # 🎯 항상 하이브리드 검색
-            if comparison_info.get("is_comparison") and comparison_info.get("topics"):
-                # 비교 모드: 멀티 주제 검색
-                context_text, raw_chunks = self.retriever.search_multi_topic(
-                    query,
-                    comparison_info["topics"]
-                )
-                prompt_template = self.comparison_prompt_template
-                topics_str = ", ".join(comparison_info["topics"])
-                logger.info("비교 모드 검색 시작", extra={"topics": topics_str})
-            else:
-                # 일반 모드: 하이브리드 검색 (항상!)
-                context_text, raw_chunks = self.retriever.search_hybrid(query)
-                prompt_template = self.table_prompt_template if table_mode else self.base_prompt_template
-                topics_str = ""
-                logger.info("일반 모드 검색 시작", extra={"table_mode": table_mode})
+            # 🎯 Step 1: 검색 방식 결정 (모드 기반)
+            # ┌─────────────────────────────────────────┐
+            # │ 비교 모드 vs 일반 모드 (독립적)         │
+            # └─────────────────────────────────────────┘
 
-            # 포맷 (history 포함)
+            is_comparison = comparison_info.get("is_comparison", False)
+            topics = comparison_info.get("topics", [])
+
+            if is_comparison and topics and len(topics) >= 2:
+                # ✅ 비교 모드: 각 토픽별 검색
+                logger.info("🔄 비교 모드 검색", extra={
+                    "topics": topics,
+                    "confidence": comparison_info.get("confidence", "N/A")
+                })
+                context_text, raw_chunks = self.retriever.search_multi_topic(
+                    query, topics
+                )
+                is_in_comparison_mode = True
+
+            else:
+                # ✅ 일반 모드: 일반 하이브리드 검색
+                logger.info("📝 일반 모드 검색")
+                context_text, raw_chunks = self.retriever.search_hybrid(query)
+                is_in_comparison_mode = False
+
+            # 🎯 Step 2: 프롬프트 선택 (table_mode 기반) ← 독립적
+            # ┌─────────────────────────────────────────┐
+            # │ 테이블 형식 여부 (모드와 무관)          │
+            # │ 어떤 검색이든 테이블로 표현 가능        │
+            # └─────────────────────────────────────────┘
+
+            prompt_template = self._select_prompt_template(
+                table_mode=table_mode,
+                is_comparison=is_in_comparison_mode,
+                topics=topics if is_in_comparison_mode else []
+            )
+
+            logger.info("📋 프롬프트 선택", extra={
+                "table_mode": table_mode,
+                "is_comparison": is_in_comparison_mode
+            })
+
+            # ✅ Step 3: 메시지 포맷
             messages = self._safe_format(
                 prompt_template,
                 context=context_text,
                 query=query,
                 history=history or "",
-                topics=topics_str
+                topics=", ".join(topics) if is_in_comparison_mode else ""
             )
 
-            # 스트리밍 응답
+            # ✅ Step 4: 스트리밍
             for chunk in self.llm.stream(messages):
                 if hasattr(chunk, 'content') and chunk.content:
                     token = unicode_normalize('NFC', chunk.content)
                     yield token
 
-            logger.info("스트리밍 완료")
+            logger.info("✅ 스트리밍 완료", extra={
+                "table_mode": table_mode,
+                "is_comparison": is_in_comparison_mode
+            })
 
         except Exception as e:
-            logger.error(f"스트리밍 중 오류: {e}", exc_info=True)
-            yield f"\n\n[오류 발생]\n{str(e)}"
+            logger.error(f"❌ RAG 오류: {e}", exc_info=True)
+            yield f"\n\n[오류]\n{str(e)}"
+
+        # ✅ 새 메서드: 프롬프트 선택 로직
+    def _select_prompt_template(
+            self,
+            table_mode: bool,
+            is_comparison: bool,
+            topics: List[str] = None
+    ) -> ChatPromptTemplate:
+        """
+        프롬프트 템플릿 선택 (테이블 + 모드 조합)
+
+        로직:
+        1. table_mode 확인 → base 선택 (table vs normal)
+        2. is_comparison 확인 → 프롬프트 내용 추가
+        """
+
+        # ✅ 비교 모드 + 테이블 형식 (하이브리드)
+        if is_comparison and table_mode:
+            logger.info(f"📋 비교 + 테이블 프롬프트 선택 (주제: {topics})")
+            return self.comparison_table_prompt_template
+
+        # ✅ 비교 모드 + 일반 형식
+        elif is_comparison:
+            logger.info(f"📋 비교 프롬프트 선택 (주제: {topics})")
+            return self.comparison_prompt_template
+
+        # ✅ 일반 모드 + 테이블 형식
+        elif table_mode:
+            logger.info("📋 테이블 프롬프트 선택")
+            return self.table_prompt_template
+
+        # ✅ 일반 모드 + 일반 형식
+        else:
+            logger.info("📋 일반 프롬프트 선택")
+            return self.base_prompt_template
 
 # 글로벌 인스턴스
 langchain_rag_service = LangChainRAGService()

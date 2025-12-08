@@ -187,9 +187,8 @@ class UnifiedChatService:
             user_fk=user_fk,
             query=query,
             response=full_response,
-            table_mode=table_mode,  # ✅ 함께 저장
+            table_mode=table_mode,
             comparison_mode=comparison_info.get("is_comparison"),
-            comparison_topics=comparison_info.get("topics"),
             source_chunk_ids=source_chunk_ids,
             supabase_client=supabase_client
         )
