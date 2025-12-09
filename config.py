@@ -63,6 +63,13 @@ MICROSOFT_APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD")
 MICROSOFT_TENANT_ID = os.getenv("MICROSOFT_TENANT_ID")
 
 # ==========================================
+# Azure Container Instances
+# ==========================================
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
+AZURE_CONTAINER_GROUP_NAME = os.getenv("AZURE_CONTAINER_GROUP_NAME")
+
+# ==========================================
 # 로깅 설정
 # ==========================================
 import logging
