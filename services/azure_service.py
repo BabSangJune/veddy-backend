@@ -64,17 +64,40 @@ class AzureService:
                 container_app_name=AZURE_CONTAINER_APP_NAME,
             )
 
-            # 상태 확인
-            provisioning_state = container_app.properties.provisioning_state
-            running_status = container_app.properties.running_status
+            # 상태 확인 (직접 속성 접근)
+            provisioning_state = getattr(container_app, 'provisioning_state', 'Unknown')
 
-            logger.info(f"📊 Azure 상태: {provisioning_state} / {running_status}")
+            # configuration 확인
+            configuration = getattr(container_app, 'configuration', None)
+            min_replicas = 0
+            max_replicas = 0
+
+            if configuration:
+                scale = getattr(configuration, 'scale', None)
+                if scale:
+                    min_replicas = getattr(scale, 'min_replicas', 0)
+                    max_replicas = getattr(scale, 'max_replicas', 1)
+
+            logger.info(f"📊 Azure 상태: {provisioning_state} (Min: {min_replicas}, Max: {max_replicas})")
+
+            # 상태 매핑
+            status_mapping = {
+                "Succeeded": "healthy",
+                "Running": "healthy",
+                "Creating": "warming-up",
+                "Updating": "warming-up",
+                "Deleting": "error",
+                "Failed": "error",
+            }
+
+            frontend_status = status_mapping.get(provisioning_state, "idle")
 
             return {
-                "status": provisioning_state.lower(),
-                "state": running_status,
+                "status": frontend_status,
+                "state": provisioning_state,
                 "provider": "azure",
-                "replicas": container_app.properties.configuration.active_revisions_mode,
+                "min_replicas": min_replicas,
+                "max_replicas": max_replicas,
             }
 
         except Exception as e:
@@ -87,7 +110,7 @@ class AzureService:
 
     def start_container(self) -> Dict[str, Any]:
         """
-        🚀 Azure Container App 시작
+        🚀 Azure Container App 시작 (Min Replicas 조정)
         """
         if not self.enabled:
             logger.info("⚠️  Azure 비활성화 - 로컬 모드")
@@ -97,16 +120,17 @@ class AzureService:
             }
 
         try:
-            status = self.get_container_status()
+            # 현재 상태 확인
+            current_status = self.get_container_status()
 
-            if status["status"] == "succeeded":
+            if current_status["status"] == "healthy":
                 logger.info("💚 Container App 이미 실행 중")
                 return {
                     "message": "Container App이 이미 실행 중입니다.",
-                    "status": "running",
+                    "status": "healthy",
                 }
 
-            # Container App 시작 (Revision 활성화)
+            # Container App 가져오기
             logger.warning("🔄 Container App 시작 중...")
 
             container_app = self.client.container_apps.get(
@@ -114,22 +138,28 @@ class AzureService:
                 container_app_name=AZURE_CONTAINER_APP_NAME,
             )
 
-            # Replica를 늘려서 시작
-            container_app.properties.configuration.min_replicas = 1
+            # Min Replicas를 1로 설정
+            if hasattr(container_app, 'configuration'):
+                if hasattr(container_app.configuration, 'scale'):
+                    container_app.configuration.scale.min_replicas = 1
 
-            self.client.container_apps.begin_update(
-                resource_group_name=AZURE_RESOURCE_GROUP,
-                container_app_name=AZURE_CONTAINER_APP_NAME,
-                container_app_envelope=container_app,
-            )
+                    # 업데이트 요청
+                    self.client.container_apps.begin_update(
+                        resource_group_name=AZURE_RESOURCE_GROUP,
+                        container_app_name=AZURE_CONTAINER_APP_NAME,
+                        container_app_envelope=container_app,
+                    )
 
-            logger.info("✅ Container App 시작 요청 완료")
+                    logger.info("✅ Container App 시작 요청 완료")
 
-            return {
-                "message": "Container App 시작을 요청했습니다.",
-                "status": "starting",
-                "estimated_time": "30-40초",
-            }
+                    return {
+                        "message": "Container App 시작을 요청했습니다.",
+                        "status": "warming-up",
+                        "estimated_time": "30-40초",
+                    }
+
+            # 구조를 찾을 수 없으면 에러
+            raise ValueError("Container App 설정을 찾을 수 없습니다")
 
         except Exception as e:
             logger.error(f"❌ Container App 시작 실패: {e}", exc_info=True)
@@ -143,7 +173,7 @@ class AzureService:
         💚 Container App이 정상 상태인지 확인
         """
         status = self.get_container_status()
-        return status["status"] in ["succeeded", "running"]
+        return status["status"] == "healthy"
 
 
 # 싱글톤 인스턴스
