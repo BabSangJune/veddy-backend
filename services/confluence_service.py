@@ -1,4 +1,4 @@
-# services/confluence_service.py (최종 버전)
+# services/confluence_service.py (✨ Singleton 패턴 적용)
 
 import requests
 from typing import List, Dict, Any, Optional
@@ -9,13 +9,35 @@ from unicodedata import normalize as unicode_normalize
 
 
 class ConfluenceService:
-    def __init__(self):
-        """Confluence 클라이언트 초기화"""
-        self.base_url = CONFLUENCE_URL
-        self.space_key = CONFLUENCE_SPACE_KEY
+    # ✨ 클래스 변수: 싱글톤 인스턴스
+    _instance = None
 
-        # 기본 인증 (email:token)
-        auth_string = f"applause1319@naver.com:{CONFLUENCE_API_TOKEN}"
+    def __init__(self, space_key: str, atlassian_id: str, api_token: str):
+        """Confluence 클라이언트 초기화
+
+        Args:
+            space_key: Confluence Space Key (필수)
+            atlassian_id: Atlassian ID (이메일) (필수)
+            api_token: Confluence API Token (필수)
+        """
+        # ✨ 필수 입력 검증
+        if not space_key or not isinstance(space_key, str):
+            raise ValueError("❌ Space Key는 필수이며, 문자열이어야 합니다")
+
+        if not atlassian_id or not isinstance(atlassian_id, str):
+            raise ValueError("❌ Atlassian ID는 필수이며, 문자열이어야 합니다")
+
+        if not api_token or not isinstance(api_token, str):
+            raise ValueError("❌ API Token은 필수이며, 문자열이어야 합니다")
+
+        # ✨ 정보 저장
+        self.base_url = CONFLUENCE_URL
+        self.space_key = space_key.strip()
+        self.atlassian_id = atlassian_id.strip()
+        self.api_token = api_token.strip()
+
+        # 기본 인증 (atlassian_id:token)
+        auth_string = f"{self.atlassian_id}:{self.api_token}"
         encoded_auth = base64.b64encode(auth_string.encode()).decode()
 
         self.headers = {
@@ -24,7 +46,105 @@ class ConfluenceService:
             "Content-Type": "application/json"
         }
 
-        print("✅ Confluence 클라이언트 초기화 완료")
+        print(f"✅ Confluence 클라이언트 초기화 완료 (Space: {self.space_key}, Atlassian ID: {self.atlassian_id})")
+
+    @classmethod
+    def initialize(cls, space_key: str, atlassian_id: str, api_token: str) -> 'ConfluenceService':
+        """Confluence Service 초기화 (Singleton 패턴)
+
+        Args:
+            space_key: Confluence Space Key (필수)
+            atlassian_id: Atlassian ID (이메일) (필수)
+            api_token: Confluence API Token (필수)
+
+        Returns:
+            ConfluenceService 싱글톤 인스턴스
+
+        Example:
+            confluence_service = ConfluenceService.initialize('SpaceKey', 'atlassian@example.com', 'token123')
+        """
+        cls._instance = cls(space_key, atlassian_id, api_token)
+        return cls._instance
+
+    @classmethod
+    def get_instance(cls) -> 'ConfluenceService':
+        """현재 싱글톤 인스턴스 반환
+
+        Returns:
+            ConfluenceService 싱글톤 인스턴스
+
+        Raises:
+            ValueError: 인스턴스가 초기화되지 않았을 경우
+
+        Example:
+            service = ConfluenceService.get_instance()
+        """
+        if cls._instance is None:
+            raise ValueError("❌ Confluence Service가 초기화되지 않았습니다. initialize()를 먼저 호출하세요")
+        return cls._instance
+
+    def set_space_key(self, space_key: str) -> None:
+        """Space Key 동적 변경
+
+        Args:
+            space_key: 새로 설정할 Confluence Space Key (필수)
+
+        Raises:
+            ValueError: Space Key가 비어있을 경우
+        """
+        if not space_key or not isinstance(space_key, str):
+            raise ValueError("❌ Space Key는 필수이며, 문자열이어야 합니다")
+
+        old_key = self.space_key
+        self.space_key = space_key.strip()
+        print(f"✅ Space Key 변경: '{old_key}' → '{self.space_key}'")
+
+    def set_credentials(self, atlassian_id: str, api_token: str) -> None:
+        """Confluence 자격증명 동적 변경
+
+        Args:
+            atlassian_id: Atlassian ID (이메일) (필수)
+            api_token: Confluence API Token (필수)
+
+        Raises:
+            ValueError: atlassian_id나 api_token이 비어있을 경우
+        """
+        if not atlassian_id or not isinstance(atlassian_id, str):
+            raise ValueError("❌ Atlassian ID는 필수이며, 문자열이어야 합니다")
+
+        if not api_token or not isinstance(api_token, str):
+            raise ValueError("❌ API Token은 필수이며, 문자열이어야 합니다")
+
+        old_atlassian_id = self.atlassian_id
+        self.atlassian_id = atlassian_id.strip()
+        self.api_token = api_token.strip()
+
+        # ✨ 새로운 인증정보로 헤더 업데이트
+        auth_string = f"{self.atlassian_id}:{self.api_token}"
+        encoded_auth = base64.b64encode(auth_string.encode()).decode()
+
+        self.headers = {
+            "Authorization": f"Basic {encoded_auth}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+        print(f"✅ 자격증명 변경: '{old_atlassian_id}' → '{self.atlassian_id}'")
+
+    def set_all(self, space_key: str, atlassian_id: str, api_token: str) -> None:
+        """Space Key와 자격증명 한 번에 설정
+
+        Args:
+            space_key: Confluence Space Key (필수)
+            atlassian_id: Atlassian ID (이메일) (필수)
+            api_token: Confluence API Token (필수)
+
+        Raises:
+            ValueError: 필수 파라미터가 비어있을 경우
+        """
+        self.set_space_key(space_key)
+        self.set_credentials(atlassian_id, api_token)
+        print(f"✅ 모든 설정 완료: Space={self.space_key}, Atlassian ID={self.atlassian_id}")
 
     def get_pages_from_space(self, limit: int = 50) -> List[Dict[str, Any]]:
         """공간(Space)의 모든 페이지 조회"""
@@ -226,6 +346,4 @@ class ConfluenceService:
 
         return pages_with_content
 
-
-# 글로벌 인스턴스
-confluence_service = ConfluenceService()
+confluence_service = None

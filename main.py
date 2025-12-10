@@ -36,9 +36,7 @@ from contextlib import asynccontextmanager
 from services.embedding_service import embedding_service
 from services.supabase_service import supabase_service
 from services.langchain_rag_service import langchain_rag_service
-from routers import chat_router
-from routers import teams_router
-from routers import container_router
+from routers import chat_router, teams_router, container_router, admin_router
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +148,7 @@ app.add_middleware(
 app.include_router(chat_router.router)
 app.include_router(teams_router.router)
 app.include_router(container_router.router)
+app.include_router(admin_router.router)
 
 
 import psutil
