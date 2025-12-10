@@ -1,7 +1,7 @@
 """
 🔄 Container Wake-up Router
 - Cold start 처리
-- Azure Container Instances 연동
+- Azure Container Apps 연동
 """
 
 from fastapi import APIRouter, HTTPException
@@ -25,14 +25,14 @@ async def wake_up_container() -> Dict[str, Any]:
     """
     try:
         # Azure 상태 조회
-        status = azure_service.get_container_status()
+        azure_status = azure_service.get_container_status()
 
-        if status["status"] in ["succeeded", "running"]:
+        if azure_status["status"] == "healthy":
             logger.info("💚 컨테이너 이미 HEALTHY 상태")
             return {
                 "status": "healthy",
                 "message": "컨테이너가 이미 준비되어 있습니다.",
-                "azure_status": status,
+                "azure_status": azure_status,
             }
 
         # Azure 컨테이너 시작
@@ -60,27 +60,15 @@ async def get_container_status() -> Dict[str, Any]:
     📊 컨테이너 상태 조회 (Azure 실제 상태)
     """
     try:
+        # Azure 상태 조회 (이미 변환된 상태)
         azure_status = azure_service.get_container_status()
 
-        # Azure 상태 → 프론트엔드 상태로 변환
-        status_mapping = {
-            "succeeded": "healthy",
-            "running": "healthy",
-            "creating": "warming-up",
-            "terminated": "idle",
-            "error": "error",
-        }
-
-        frontend_status = status_mapping.get(
-            azure_status.get("status", "error"),
-            "error"
-        )
-
+        # azure_service에서 이미 변환했으므로 그대로 반환
         return {
-            "status": frontend_status,
+            "status": azure_status["status"],  # ← 이미 변환된 값 (healthy/warming-up/idle/error)
             "azure_status": azure_status,
             "timestamp": datetime.utcnow().isoformat(),
-            "provider": "azure" if IS_PRODUCTION else "local",
+            "provider": azure_status.get("provider", "azure" if IS_PRODUCTION else "local"),
         }
 
     except Exception as e:
@@ -94,10 +82,9 @@ async def get_container_logs(lines: int = 50) -> Dict[str, Any]:
     📋 컨테이너 로그 조회
     """
     try:
-        logs = azure_service.get_logs(lines=lines)
-
+        # 추후 구현
         return {
-            "logs": logs,
+            "logs": "로그 조회 기능 추후 구현 예정",
             "lines": lines,
         }
     except Exception as e:
