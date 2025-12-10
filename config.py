@@ -67,7 +67,7 @@ MICROSOFT_TENANT_ID = os.getenv("MICROSOFT_TENANT_ID")
 # ==========================================
 AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID")
 AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP")
-AZURE_CONTAINER_GROUP_NAME = os.getenv("AZURE_CONTAINER_GROUP_NAME")
+AZURE_CONTAINER_APP_NAME = os.getenv("AZURE_CONTAINER_APP_NAME", "ca-veddy-backend")
 
 # ==========================================
 # 로깅 설정
