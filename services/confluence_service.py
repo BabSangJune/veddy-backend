@@ -146,22 +146,38 @@ class ConfluenceService:
         self.set_credentials(atlassian_id, api_token)
         print(f"✅ 모든 설정 완료: Space={self.space_key}, Atlassian ID={self.atlassian_id}")
 
-    def get_pages_from_space(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """공간(Space)의 모든 페이지 조회 (✅ 수동 필터링)"""
+    def get_pages_from_space(self, limit: int = None, total_limit: int = None) -> List[Dict[str, Any]]:
+        """
+        공간(Space)의 모든 페이지 조회 (✅ Cursor 기반 페이지네이션 - 정확함!)
+
+        Args:
+            limit: 단일 API 호출당 페이지 수 (기본: 100, Confluence API 최대)
+            total_limit: 총 로드할 페이지 수 (None = 모든 페이지 로드)
+
+        Returns:
+            페이지 리스트
+        """
+        from config import CONFLUENCE_PAGE_BATCH_SIZE, CONFLUENCE_TOTAL_LIMIT
+        import urllib.parse
+
+        limit = limit or CONFLUENCE_PAGE_BATCH_SIZE
+        total_limit = total_limit or CONFLUENCE_TOTAL_LIMIT
+
+        # ✅ 개선: total_limit이 None이면 무제한 로드
+        unlimited = total_limit is None or total_limit == 0
 
         print(f"\n🔍 Space 조회:")
         print(f"  - 찾는 Space Key: {self.space_key}")
+        print(f"  - 배치 크기: {limit} | 총 제한: {'무제한' if unlimited else total_limit}")
 
         try:
             # Step 1️⃣: 모든 Space 조회
             spaces_url = f"{self.base_url}/api/v2/spaces"
-            spaces_params = {
-                "limit": 100  # ← spaceKey 파라미터 제거, 모든 space 조회
-            }
+            spaces_params = {"limit": 100}
 
             print(f"  - 1️⃣ 모든 Space 조회 URL: {spaces_url}")
 
-            response = requests.get(spaces_url, headers=self.headers, params=spaces_params)
+            response = requests.get(spaces_url, headers=self.headers, params=spaces_params, timeout=30)
             response.raise_for_status()
 
             all_spaces = response.json().get("results", [])
@@ -189,29 +205,69 @@ class ConfluenceService:
             print(f"    - ID: {space_id}")
             print(f"    - Name: {target_space.get('name')}")
 
-            # Step 3️⃣: Space ID로 페이지 조회
-            pages_url = f"{self.base_url}/api/v2/spaces/{space_id}/pages"
-            pages_params = {
-                "limit": limit,
-                "expand": "body.storage"
-            }
+            # Step 3️⃣: 페이지 조회 (✅ Cursor 기반 페이지네이션)
+            all_pages = []
+            cursor = None
+            api_call_count = 0
 
-            print(f"  - 2️⃣ 페이지 조회 URL: {pages_url}")
+            while True:
+                # ✅ Cursor 기반 URL 구성
+                pages_url = f"{self.base_url}/api/v2/spaces/{space_id}/pages"
+                pages_params = {
+                    "limit": limit,
+                    "expand": "body.storage"
+                }
 
-            response = requests.get(pages_url, headers=self.headers, params=pages_params)
-            response.raise_for_status()
+                # 첫 호출이 아니면 cursor 추가
+                if cursor:
+                    pages_params["cursor"] = cursor
 
-            data = response.json()
-            pages = data.get("results", [])
+                print(f"  - 2️⃣-{api_call_count + 1} 페이지 조회: {pages_url}" + (f" (cursor={cursor[:20]}...)" if cursor else ""))
 
-            print(f"✅ {len(pages)}개 페이지 조회 완료 (Space: {space_key})")
-            return pages
+                response = requests.get(pages_url, headers=self.headers, params=pages_params, timeout=30)
+                response.raise_for_status()
+
+                response_data = response.json()
+                batch_pages = response_data.get("results", [])
+                api_call_count += 1
+
+                if not batch_pages:
+                    print(f"  - ✅ 더 이상 페이지 없음. 총 {len(all_pages)}개 로드")
+                    break  # 더 이상 페이지 없음
+
+                all_pages.extend(batch_pages)
+
+                # 진행 상황 로깅
+                print(f"     📄 이번 배치: {len(batch_pages)}개 | 누적: {len(all_pages)}개")
+
+                # ✅ 마지막 페이지 감지 로직 (Cursor 기반)
+                links = response_data.get("_links", {})
+                next_cursor = links.get("next")
+
+                if not next_cursor:
+                    print(f"  - ✅ 마지막 페이지 도달 (next 링크 없음). 총 {len(all_pages)}개 로드 완료")
+                    break
+
+                # ✅ total_limit 체크 (무제한이 아니면)
+                if not unlimited and len(all_pages) >= total_limit:
+                    print(f"  - ⚠️ 제한 도달. {total_limit}개까지만 로드 완료")
+                    all_pages = all_pages[:total_limit]
+                    break
+
+                # ✅ 다음 cursor 추출
+                parsed = urllib.parse.urlparse(next_cursor)
+                cursor_param = urllib.parse.parse_qs(parsed.query).get("cursor", [None])[0]
+                cursor = cursor_param
+
+            print(f"✅ 총 {len(all_pages)}개 페이지 조회 완료 (Space: {space_key}, API 호출: {api_call_count}회)")
+            return all_pages
 
         except requests.exceptions.RequestException as e:
             print(f"❌ Confluence API 요청 오류: {e}")
             if hasattr(e, 'response'):
                 print(f"  - 응답: {e.response.text}")
             return []
+
 
     def get_page_content(self, page_id: str) -> Optional[Dict[str, Any]]:
         """특정 페이지의 상세 내용 조회 (✅ REST API v2)"""

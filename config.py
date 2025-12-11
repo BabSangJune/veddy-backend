@@ -29,6 +29,8 @@ EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "dragonkue/BGE-m3-ko")
 EMBEDDING_MODEL_DIMENSION = int(os.getenv("EMBEDDING_MODEL_DIMENSION", 1024))
 TOKENIZERS_PARALLELISM = os.getenv("TOKENIZERS_PARALLELISM", "false")
 
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+
 # ==========================================
 # Server
 # ==========================================
@@ -41,6 +43,10 @@ SERVER_PORT = int(os.getenv("SERVER_PORT", 8000))
 CONFLUENCE_URL = os.getenv("CONFLUENCE_URL")
 CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN")
 CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY")
+
+CONFLUENCE_PAGE_BATCH_SIZE = int(os.getenv("CONFLUENCE_PAGE_BATCH_SIZE", "100"))
+CONFLUENCE_TOTAL_LIMIT = None
+CONFLUENCE_REQUEST_TIMEOUT = int(os.getenv("CONFLUENCE_REQUEST_TIMEOUT", "30"))
 
 # ==========================================
 # CORS

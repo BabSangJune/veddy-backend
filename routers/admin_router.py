@@ -66,8 +66,6 @@ async def load_confluence_data(
 
 # ===== 2️⃣ GET SSE 엔드포인트 (진행 상황) =====
 
-# routers/admin_router.py
-
 @router.get("/confluence/load-stream")
 async def load_confluence_data_stream(
         space_key: str,
@@ -106,7 +104,7 @@ async def load_confluence_data_stream(
             total_chunks = 0
 
             # 2️⃣ 페이지 로드 완료 알림
-            yield f"data: {json.dumps({\n                'status': 'pages_loaded',\n                'total_pages': total_pages,\n                'message': f'총 {total_pages}개 페이지 로드 완료. 처리 시작합니다.',\n                'progress_percent': 5\n            })}\n\n"
+            yield f"data: {json.dumps({'status': 'pages_loaded', 'total_pages': total_pages, 'message': f'총 {total_pages}개 페이지 로드 완료. 처리 시작합니다.', 'progress_percent': 5})}\n\n"
 
             # 3️⃣ 각 페이지 처리
             for idx, page in enumerate(pages, 1):
@@ -122,7 +120,7 @@ async def load_confluence_data_stream(
 
                     # 진행 상황 알림 (처리 시작)
                     progress = int(5 + ((idx - 1) / total_pages) * 90)  # 5% ~ 95%
-                    yield f"data: {json.dumps({\n                        'status': 'processing',\n                        'message': f'[{idx}/{total_pages}] {page_title} 처리 중...',\n                        'current_page': page_title,\n                        'processed_pages': idx,\n                        'total_pages': total_pages,\n                        'progress_percent': progress,\n                        'success_count': success_count,\n                        'skip_count': skip_count,\n                        'error_count': error_count,\n                        'total_chunks': total_chunks\n                    })}\n\n"
+                    yield f"data: {json.dumps({'status': 'processing', 'message': f'[{idx}/{total_pages}] {page_title} 처리 중...', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'progress_percent': progress, 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks})}\n\n"
 
                     # 기존 문서 확인
                     existing_doc = supabase_service.get_document_by_source_id(
@@ -182,7 +180,7 @@ async def load_confluence_data_stream(
                     )
 
                     # ✅ 임베딩 전 진행 상황 알림
-                    yield f"data: {json.dumps({\n                        'status': 'embedding',\n                        'message': f'[{idx}/{total_pages}] {page_title} 임베딩 중... ({len(chunks)}개 청크)',\n                        'current_page': page_title,\n                        'processed_pages': idx,\n                        'total_pages': total_pages,\n                        'progress_percent': progress,\n                        'success_count': success_count,\n                        'skip_count': skip_count,\n                        'error_count': error_count,\n                        'total_chunks': total_chunks\n                    })}\n\n"
+                    yield f"data: {json.dumps({'status': 'embedding', 'message': f'[{idx}/{total_pages}] {page_title} 임베딩 중... ({len(chunks)}개 청크)', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'progress_percent': progress, 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks})}\n\n"
 
                     # 벡터 임베딩
                     embeddings = embedding_service.embed_batch(chunks)
@@ -202,21 +200,21 @@ async def load_confluence_data_stream(
                     total_chunks += saved_count
 
                     # SSE 진행 상황 업데이트
-                    yield f"data: {json.dumps({\n                        'status': 'chunks_saved',\n                        'message': f'[{idx}/{total_pages}] {page_title} 청크 저장: {saved_count}개',\n                        'current_page': page_title,\n                        'processed_pages': idx,\n                        'total_pages': total_pages,\n                        'chunks_saved': saved_count,\n                        'total_chunks': total_chunks\n                    })}\n\n"
+                    yield f"data: {json.dumps({'status': 'chunks_saved', 'message': f'[{idx}/{total_pages}] {page_title} 청크 저장: {saved_count}개', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'chunks_saved': saved_count, 'total_chunks': total_chunks})}\n\n"
 
                     success_count += 1
 
                     # ✅ 페이지 완료 알림
-                    yield f"data: {json.dumps({\n                        'status': 'page_completed',\n                        'message': f'[{idx}/{total_pages}] {page_title} 완료 ({len(chunks)}개 청크)',\n                        'current_page': page_title,\n                        'processed_pages': idx,\n                        'total_pages': total_pages,\n                        'progress_percent': progress,\n                        'success_count': success_count,\n                        'skip_count': skip_count,\n                        'error_count': error_count,\n                        'total_chunks': total_chunks\n                    })}\n\n"
+                    yield f"data: {json.dumps({'status': 'page_completed', 'message': f'[{idx}/{total_pages}] {page_title} 완료 ({len(chunks)}개 청크)', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'progress_percent': progress, 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks})}\n\n"
 
                 except Exception as e:
                     logger.error(f"페이지 처리 실패: {e}", exc_info=True)
                     error_count += 1
-                    yield f"data: {json.dumps({\n                        'status': 'page_error',\n                        'message': f'❌ 페이지 처리 실패: {str(e)}',\n                        'processed_pages': idx,\n                        'total_pages': total_pages,\n                        'error_count': error_count\n                    })}\n\n"
+                    yield f"data: {json.dumps({'status': 'page_error', 'message': f'❌ 페이지 처리 실패: {str(e)}', 'processed_pages': idx, 'total_pages': total_pages, 'error_count': error_count})}\n\n"
                     continue
 
             # ✅ 최종 완료
-            yield f"data: {json.dumps({\n                'status': 'completed',\n                'success_count': success_count,\n                'skip_count': skip_count,\n                'error_count': error_count,\n                'total_chunks': total_chunks,\n                'progress_percent': 100,\n                'message': f'✅ {success_count}개 문서 처리 완료 ({total_chunks}개 청크 생성)'\n            })}\n\n"
+            yield f"data: {json.dumps({'status': 'completed', 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks, 'progress_percent': 100, 'message': f'✅ {success_count}개 문서 처리 완료 ({total_chunks}개 청크 생성)'})}\n\n"
 
             logger.info(
                 "✅ Confluence 데이터 로드 완료",
