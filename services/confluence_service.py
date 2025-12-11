@@ -1,4 +1,4 @@
-# services/confluence_service.py (✨ Singleton 패턴 적용)
+# services/confluence_service.py (✨ Singleton 패턴 적용 + ✅ REST API v2)
 
 import requests
 from typing import List, Dict, Any, Optional
@@ -147,13 +147,79 @@ class ConfluenceService:
         print(f"✅ 모든 설정 완료: Space={self.space_key}, Atlassian ID={self.atlassian_id}")
 
     def get_pages_from_space(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """공간(Space)의 모든 페이지 조회"""
-        url = f"{self.base_url}/rest/api/content"
+        """공간(Space)의 모든 페이지 조회 (✅ 수동 필터링)"""
+
+        print(f"\n🔍 Space 조회:")
+        print(f"  - 찾는 Space Key: {self.space_key}")
+
+        try:
+            # Step 1️⃣: 모든 Space 조회
+            spaces_url = f"{self.base_url}/api/v2/spaces"
+            spaces_params = {
+                "limit": 100  # ← spaceKey 파라미터 제거, 모든 space 조회
+            }
+
+            print(f"  - 1️⃣ 모든 Space 조회 URL: {spaces_url}")
+
+            response = requests.get(spaces_url, headers=self.headers, params=spaces_params)
+            response.raise_for_status()
+
+            all_spaces = response.json().get("results", [])
+            print(f"  - 📋 조회된 전체 Space: {len(all_spaces)}개")
+            for s in all_spaces:
+                print(f"    - {s.get('key')}: {s.get('name')} (ID: {s.get('id')})")
+
+            # Step 2️⃣: 우리가 찾는 Space 필터링
+            target_space = None
+            for space in all_spaces:
+                if space.get("key") == self.space_key:
+                    target_space = space
+                    break
+
+            if not target_space:
+                print(f"❌ Space '{self.space_key}' 찾을 수 없음")
+                print(f"   사용 가능한 Space Key: {[s.get('key') for s in all_spaces]}")
+                return []
+
+            space_id = target_space.get("id")
+            space_key = target_space.get("key")
+
+            print(f"  - ✅ 찾은 Space:")
+            print(f"    - Key: {space_key}")
+            print(f"    - ID: {space_id}")
+            print(f"    - Name: {target_space.get('name')}")
+
+            # Step 3️⃣: Space ID로 페이지 조회
+            pages_url = f"{self.base_url}/api/v2/spaces/{space_id}/pages"
+            pages_params = {
+                "limit": limit,
+                "expand": "body.storage"
+            }
+
+            print(f"  - 2️⃣ 페이지 조회 URL: {pages_url}")
+
+            response = requests.get(pages_url, headers=self.headers, params=pages_params)
+            response.raise_for_status()
+
+            data = response.json()
+            pages = data.get("results", [])
+
+            print(f"✅ {len(pages)}개 페이지 조회 완료 (Space: {space_key})")
+            return pages
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Confluence API 요청 오류: {e}")
+            if hasattr(e, 'response'):
+                print(f"  - 응답: {e.response.text}")
+            return []
+
+    def get_page_content(self, page_id: str) -> Optional[Dict[str, Any]]:
+        """특정 페이지의 상세 내용 조회 (✅ REST API v2)"""
+        # ✅ v2 엔드포인트 사용
+        url = f"{self.base_url}/api/v2/pages/{page_id}"
 
         params = {
-            "spaceKey": self.space_key,
-            "limit": limit,
-            "expand": "body.storage,metadata.labels,space"
+            "body-format": "storage"  # HTML 형식으로 받기
         }
 
         try:
@@ -161,28 +227,14 @@ class ConfluenceService:
             response.raise_for_status()
 
             data = response.json()
-            pages = data.get("results", [])
 
-            print(f"✅ {len(pages)}개 페이지 조회 완료")
-            return pages
+            # ✅ 디버그: 시간 정보 확인 (v2 필드)
+            print(f"\n🔍 Confluence API v2 응답 (Page ID: {page_id}):")
+            print(f"  - createdAt: {data.get('createdAt')}")
+            print(f"  - version.createdAt: {data.get('version', {}).get('createdAt')}")
+            print(f"  - Full data keys: {data.keys()}")
 
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Confluence API 요청 오류: {e}")
-            return []
-
-    def get_page_content(self, page_id: str) -> Optional[Dict[str, Any]]:
-        """특정 페이지의 상세 내용 조회"""
-        url = f"{self.base_url}/rest/api/content/{page_id}"
-
-        params = {
-            "expand": "body.storage,metadata.labels,space"
-        }
-
-        try:
-            response = requests.get(url, headers=self.headers, params=params)
-            response.raise_for_status()
-
-            return response.json()
+            return data
 
         except requests.exceptions.RequestException as e:
             print(f"❌ 페이지 조회 오류: {e}")
@@ -315,35 +367,72 @@ class ConfluenceService:
         return normalized
 
     def get_all_pages_with_content(self) -> List[Dict[str, Any]]:
-        """공간의 모든 페이지와 그 내용을 조회"""
-        pages = self.get_pages_from_space(limit=100)
+        """공간의 모든 페이지와 그 내용을 조회 (✅ REST API v2 + 시간 정보 + URL 수정)"""
+        from datetime import datetime
+        from dateutil import parser as date_parser
 
+        pages = self.get_pages_from_space(limit=100)
         pages_with_content = []
 
         for i, page in enumerate(pages, 1):
             page_id = page.get("id")
             title = page.get("title", "Untitled")
-            url = page.get("_links", {}).get("webui", "")
 
+            # ✅ API에서 받은 상대 URL (예: /spaces/SD/pages/106201423)
+            relative_url = page.get("_links", {}).get("webui", "")
+
+            # ✅ 디버그: URL 확인
             print(f"  [{i}/{len(pages)}] {title} ({page_id})")
+            print(f"    📍 Relative URL: {relative_url}")
 
-            # 상세 내용 조회
+            # ✅ 도메인 + 상대 URL = 완전한 URL
+            full_url = f"{self.base_url}{relative_url}" if relative_url else ""
+            print(f"    🔗 Full URL: {full_url}")
+
+            url = full_url  # ← 이걸 사용
+
+            # 상세 내용 조회 (v2)
             full_page = self.get_page_content(page_id)
 
             if full_page:
-                # HTML 내용 추출 (전처리 적용!)
+                # ✅ v2 응답에서 HTML 추출
                 storage_html = full_page.get("body", {}).get("storage", {}).get("value", "")
                 content = self.extract_text_from_html(storage_html)
+
+                # ✅ v2의 시간 정보 사용 (createdAt, version.createdAt)
+                # 1. 페이지 생성 시간
+                created_at_str = full_page.get("createdAt")
+
+                # 2. 페이지 수정 시간
+                updated_at_str = full_page.get("version", {}).get("createdAt")
+
+                try:
+                    created_at = date_parser.parse(created_at_str) if created_at_str else datetime.now()
+                except:
+                    created_at = datetime.now()
+
+                try:
+                    updated_at = date_parser.parse(updated_at_str) if updated_at_str else datetime.now()
+                except:
+                    updated_at = datetime.now()
+
+                print(f"    📅 Created: {created_at}")
+                print(f"    📅 Updated: {updated_at}")
 
                 pages_with_content.append({
                     "page_id": page_id,
                     "title": title,
-                    "url": url,
+                    "url": url,  # ✅ 정상 URL (도메인 포함)
                     "content": content,
                     "labels": [label.get("name") for label in
-                               full_page.get("metadata", {}).get("labels", {}).get("results", [])]
+                               full_page.get("labels", {}).get("results", [])],
+                    # ✅ 정확한 시간 정보
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "version_number": full_page.get("version", {}).get("number", 1)
                 })
 
         return pages_with_content
+
 
 confluence_service = None

@@ -58,6 +58,3 @@ node_modules
 
 # 개발 파일
 .junie
-supabase_debug.py
-test_import.py
-load_confluence_data.py

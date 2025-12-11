@@ -1,10 +1,12 @@
-# services/supabase_service.py
+# services/supabase_service.py (✨ get_document_by_source_id 메서드 추가)
 
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
 from config import SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY
 from unicodedata import normalize as unicode_normalize
 from config import VECTOR_SEARCH_CONFIG
+from datetime import datetime
+from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,12 +53,62 @@ class SupabaseService:
 
     # ==================== documents ====================
 
-    def add_document(self, source: str, source_id: str, title: str, content: str, metadata: Dict) -> Dict:
+    def get_document_by_source_id(self, source: str, source_id: str) -> Optional[Dict]:
         """
-        문서 저장 (✅ 정규화 추가)
+        ✅ Source ID로 기존 문서 조회 (변경 감지용)
+
+        Args:
+            source: 문서 출처 (예: "confluence")
+            source_id: 출처 내 고유 ID (예: Confluence page_id)
+
+        Returns:
+            기존 문서 정보 또는 None
         """
         try:
-            # ✅ 저장 전 유니코드 정규화 (NFC)
+            response = self.client.table("documents").select("*").eq(
+                "source", source
+            ).eq(
+                "source_id", source_id
+            ).limit(1).execute()
+
+            if response.data:
+                logger.debug(f"📋 기존 문서 조회 성공: {source}/{source_id}")
+                return response.data[0]
+
+            logger.debug(f"📋 기존 문서 없음: {source}/{source_id}")
+            return None
+
+        except Exception as e:
+            logger.error(f"❌ 문서 조회 실패 ({source}/{source_id}): {e}")
+            return None
+
+    def add_document(
+            self,
+            source: str,
+            source_id: str,
+            title: str,
+            content: str,
+            metadata: Dict,
+            created_at: Optional[datetime] = None,
+            updated_at: Optional[datetime] = None
+    ) -> Dict:
+        """
+        문서 저장 또는 업데이트 (Upsert)
+        - created_at, updated_at: Confluence의 실제 시간 사용
+
+        Args:
+            source: 문서 출처
+            source_id: 출처 내 고유 ID
+            title: 문서 제목
+            content: 문서 내용
+            metadata: 메타데이터
+            created_at: 생성 시간 (Confluence에서 받은 값)
+            updated_at: 수정 시간 (Confluence에서 받은 값)
+
+        Returns:
+            저장된 문서 정보
+        """
+        try:
             normalized_title = unicode_normalize('NFC', title)
             normalized_content = unicode_normalize('NFC', content)
 
@@ -65,17 +117,43 @@ class SupabaseService:
                 "source_id": source_id,
                 "title": normalized_title,
                 "content": normalized_content,
-                "metadata": metadata
+                "metadata": metadata,
+                # ✅ Confluence 시간 사용 (없으면 현재 시간)
+                "created_at": created_at.isoformat() if created_at else datetime.now().isoformat(),
+                "updated_at": updated_at.isoformat() if updated_at else datetime.now().isoformat(),
             }
 
-            response = self.client.table("documents").insert(doc_data).execute()
+            try:
+                response = self.client.table("documents").upsert(
+                    doc_data,
+                    ignore_duplicates=False
+                ).execute()
 
-            if response:
-                logger.info(f"✅ 문서 저장: {normalized_title}")
-                return response.data[0]
-            else:
-                logger.error(f"❌ 문서 저장 실패")
-                return {}
+                if response.data:
+                    logger.info(f"✅ 문서 저장/업데이트: {normalized_title} (수정: {updated_at})")
+                    return response.data[0]
+
+            except Exception as upsert_error:
+                # UPDATE 시도
+                logger.warning(f"⚠️ UPSERT 실패, UPDATE 시도: {upsert_error}")
+
+                try:
+                    response = self.client.table("documents").update(doc_data).eq(
+                        "source_id", source_id
+                    ).execute()
+
+                    if response.data:
+                        logger.info(f"✅ 문서 업데이트: {normalized_title}")
+                        return response.data[0]
+                except:
+                    # INSERT 시도
+                    response = self.client.table("documents").insert(doc_data).execute()
+                    if response.data:
+                        logger.info(f"✅ 문서 새로 저장: {normalized_title}")
+                        return response.data[0]
+
+            logger.error(f"❌ 문서 저장 실패")
+            return {}
 
         except Exception as e:
             logger.error(f"❌ 문서 저장 중 오류: {e}")
@@ -126,16 +204,16 @@ class SupabaseService:
         """
         벡터 유사도 검색 (config 기반 + 성능 모니터링)
         """
-        import time  # ✅ 시간 측정용
+        import time
 
         # ✅ config에서 기본값 자동 적용
         config_threshold = VECTOR_SEARCH_CONFIG['similarity_threshold']
         config_ef_search = VECTOR_SEARCH_CONFIG['ef_search']
 
-        threshold = threshold or config_threshold  # None이면 config 사용
+        threshold = threshold or config_threshold
         ef_search = ef_search or config_ef_search
 
-        start_time = time.time()  # ✅ 성능 측정 시작
+        start_time = time.time()
 
         try:
             logger.info(f"🔍 검색 시작 | ef={ef_search} | threshold={threshold} | limit={limit}")
@@ -169,7 +247,7 @@ class SupabaseService:
                 source = item.get('source', 'confluence')
                 metadata = item.get('metadata', {})
 
-                similarities.append(similarity)  # ✅ 평균 계산용
+                similarities.append(similarity)
 
                 chunk_data = {
                     'id': chunk_id,
@@ -184,11 +262,9 @@ class SupabaseService:
 
                 results.append(chunk_data)
 
-            # ✅ 성능 통계 계산
-            elapsed = (time.time() - start_time) * 1000  # ms
+            elapsed = (time.time() - start_time) * 1000
             avg_similarity = sum(similarities) / len(similarities) if similarities else 0
 
-            # ✅ 모니터링 로그 (config 기반)
             logger.info(f"✅ 검색 완료 | ef_search={ef_search} | "
                         f"시간={elapsed:.2f}ms | 결과={len(results)}개 | "
                         f"평균유사도={avg_similarity:.3f}")
@@ -201,7 +277,6 @@ class SupabaseService:
             import traceback
             traceback.print_exc()
             return []
-
 
     # ==================== messages ====================
 
