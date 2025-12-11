@@ -199,6 +199,43 @@ class SupabaseService:
             logger.error(f"❌ 청크 저장 중 오류: {e}")
             raise
 
+
+    # services/supabase_service.py의 SupabaseService 클래스에 추가
+
+    def delete_chunks_by_document_id(self, document_id: str) -> int:
+        """
+        ✅ 특정 문서의 모든 청크 삭제 (업데이트 시 중복 방지)
+
+        Args:
+            document_id: 문서 ID
+
+        Returns:
+            삭제된 청크 개수
+        """
+        try:
+            # 삭제 전 개수 확인
+            count_response = self.client.table("document_chunks").select(
+                "id", count="exact"
+            ).eq("document_id", document_id).execute()
+
+            count = len(count_response.data) if count_response.data else 0
+
+            if count == 0:
+                logger.debug(f"🗑️  삭제할 청크 없음 (document_id: {document_id})")
+                return 0
+
+            # 청크 삭제
+            self.client.table("document_chunks").delete().eq(
+                "document_id", document_id
+            ).execute()
+
+            logger.info(f"🗑️  청크 삭제 완료: {count}개 (document_id: {document_id})")
+            return count
+
+        except Exception as e:
+            logger.error(f"❌ 청크 삭제 실패 (document_id: {document_id}): {e}")
+            return 0
+
     def search_chunks(self, embedding: List[float], limit: int = 5,
                       threshold: float = None, ef_search: int = None) -> List[Dict[str, Any]]:
         """

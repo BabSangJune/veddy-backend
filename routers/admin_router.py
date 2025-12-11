@@ -1,6 +1,6 @@
-# routers/admin_router.py (✨ 변경 감지 로직 추가)
+# routers/admin_router.py (✅ Background Tasks 적용)
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks  # ← BackgroundTasks 추가
 from pydantic import BaseModel
 from typing import Optional
 from services.confluence_service import ConfluenceService
@@ -23,30 +23,17 @@ class LoadConfluenceDataRequest(BaseModel):
     api_token: str
 
 
-# ===== 🔌 API 엔드포인트 =====
+# ===== 🔧 백그라운드 처리 함수 =====
 
-@router.post("/confluence/load")
-async def load_confluence_data(
-        request: LoadConfluenceDataRequest,
-        user: dict = Depends(verify_supabase_token)
-):
+def process_confluence_data(request: LoadConfluenceDataRequest, user_id: str):
     """
-    ✨ 관리자: Confluence 데이터 로드 (✅ 변경 감지 + 스마트 업데이트)
+    ✨ 백그라운드에서 실행되는 Confluence 데이터 로드 함수
     """
-
-    logger = get_logger(__name__, user_id=user["user_id"])
-
-    logger.info(
-        "📚 Confluence 데이터 로드 요청",
-        extra={
-            "space_key": request.space_key,
-            "atlassian_id": request.atlassian_id[:20] + "***"
-        }
-    )
+    logger = get_logger(__name__, user_id=user_id)
 
     try:
         print("\n" + "="*60)
-        print("📚 Confluence 데이터 로드 시작")
+        print("📚 Confluence 데이터 로드 시작 (백그라운드)")
         print("="*60)
 
         confluence_service = ConfluenceService.initialize(
@@ -60,16 +47,13 @@ async def load_confluence_data(
 
         if not pages:
             logger.warning(f"⚠️ {request.space_key}에서 페이지를 찾을 수 없음")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Space '{request.space_key}'에서 페이지를 찾을 수 없습니다."
-            )
+            return
 
         print(f"✅ {len(pages)}개 페이지 조회 완료\n")
 
         print("2️⃣ 문서 처리 중...")
         success_count = 0
-        skip_count = 0  # ← ✅ 스킵 카운트
+        skip_count = 0
         error_count = 0
         total_chunks = 0
 
@@ -80,24 +64,21 @@ async def load_confluence_data(
                 page_content = page.get('content', '')
                 page_url = page.get('url', '')
                 page_labels = page.get('labels', [])
-                # ✅ 시간 정보 추출
                 created_at = page.get('created_at')
                 updated_at = page.get('updated_at')
                 version_number = page.get('version_number', 1)
 
                 print(f"\n [{idx}/{len(pages)}] 페이지 처리: {page_title}")
 
-                # ✅ 1️⃣ 기존 문서 확인 (변경 감지)
+                # ✅ 기존 문서 확인
                 existing_doc = supabase_service.get_document_by_source_id(
                     source="confluence",
                     source_id=page_id
                 )
 
-                # ✅ 2️⃣ updated_at 비교
+                # ✅ updated_at 비교
                 if existing_doc:
                     existing_updated_at = existing_doc.get("updated_at")
-
-                    # ISO 형식 변환 (비교를 위해)
                     confluence_updated_str = updated_at.isoformat() if updated_at else ""
 
                     if existing_updated_at == confluence_updated_str:
@@ -110,7 +91,7 @@ async def load_confluence_data(
                         print(f"      기존: {existing_updated_at}")
                         print(f"      신규: {confluence_updated_str}")
 
-                # ✅ 3️⃣ 토큰 필터링
+                # ✅ 토큰 필터링
                 text_stats = token_chunk_service.get_text_stats(page_content)
                 print(f"   📊 원본: {text_stats['char_count']}자 / {text_stats['token_count']}토큰")
 
@@ -120,7 +101,6 @@ async def load_confluence_data(
                     continue
 
                 print(f"   ├─ 문서 저장 중...")
-                # ✅ 시간 정보 전달
                 saved_doc = supabase_service.add_document(
                     source="confluence",
                     source_id=page_id,
@@ -136,7 +116,6 @@ async def load_confluence_data(
                         'space_key': request.space_key,
                         'version_number': version_number
                     },
-                    # ✅ Confluence 생성/수정 시간 전달
                     created_at=created_at,
                     updated_at=updated_at
                 )
@@ -148,6 +127,12 @@ async def load_confluence_data(
                     continue
 
                 print(f"   ├─ ✅ 문서 저장/업데이트 완료 (ID: {document_id})")
+
+                # ✅ 2️⃣ 기존 청크 삭제 (중복 방지)
+                if existing_doc:
+                    print(f"   ├─ 🗑️  기존 청크 삭제 중...")
+                    deleted_count = supabase_service.delete_chunks_by_document_id(document_id)
+                    print(f"   ├─ ✅ {deleted_count}개 청크 삭제 완료")
 
                 print(f"   ├─ 토큰 기반 청크 분할 중...")
                 chunks = token_chunk_service.chunk_text(
@@ -187,32 +172,64 @@ async def load_confluence_data(
 
         print(f"\n📊 처리 결과:")
         print(f"   - 성공: {success_count}개")
-        print(f"   - 스킵 (변경 없음): {skip_count}개")  # ← ✅ 추가
+        print(f"   - 스킵 (변경 없음): {skip_count}개")
         print(f"   - 실패: {error_count}개")
         print(f"   - 전체: {len(pages)}개")
         print(f"   - 총 청크: {total_chunks}개")
 
         logger.info(
-            "✅ Confluence 데이터 로드 완료",
+            "✅ Confluence 데이터 로드 완료 (백그라운드)",
             extra={
                 "space_key": request.space_key,
                 "total_pages": len(pages),
                 "success_count": success_count,
-                "skip_count": skip_count,  # ← ✅ 추가
+                "skip_count": skip_count,
                 "error_count": error_count,
                 "total_chunks": total_chunks
             }
         )
 
-        return {
-            "status": "success",
+    except Exception as e:
+        logger.error(f"❌ 백그라운드 로드 실패: {e}", exc_info=True)
+
+
+# ===== 🔌 API 엔드포인트 =====
+
+@router.post("/confluence/load")
+async def load_confluence_data(
+        request: LoadConfluenceDataRequest,
+        background_tasks: BackgroundTasks,  # ← 추가
+        user: dict = Depends(verify_supabase_token)
+):
+    """
+    ✨ 관리자: Confluence 데이터 로드 (✅ 백그라운드 처리)
+
+    즉시 응답을 반환하고, 실제 처리는 백그라운드에서 실행됩니다.
+    """
+    logger = get_logger(__name__, user_id=user["user_id"])
+
+    logger.info(
+        "📚 Confluence 데이터 로드 요청 (백그라운드)",
+        extra={
             "space_key": request.space_key,
-            "total_pages": len(pages),
-            "success_count": success_count,
-            "skip_count": skip_count,  # ← ✅ 추가
-            "error_count": error_count,
-            "total_chunks": total_chunks,
-            "message": f"✅ {success_count}개 문서 처리, {skip_count}개 건너뜀, {total_chunks}개 청크 저장"
+            "atlassian_id": request.atlassian_id[:20] + "***"
+        }
+    )
+
+    try:
+        # ✅ 백그라운드 태스크 추가
+        background_tasks.add_task(
+            process_confluence_data,
+            request=request,
+            user_id=user["user_id"]
+        )
+
+        # ✅ 즉시 응답 반환 (타임아웃 없음!)
+        return {
+            "status": "processing",
+            "message": f"📚 Space '{request.space_key}'의 데이터 로드를 시작했습니다. 백그라운드에서 처리 중입니다.",
+            "space_key": request.space_key,
+            "note": "처리 상황은 백엔드 콘솔에서 확인할 수 있습니다."
         }
 
     except ValueError as e:
@@ -220,11 +237,12 @@ async def load_confluence_data(
         raise HTTPException(status_code=400, detail=str(e))
 
     except Exception as e:
-        logger.error(f"❌ 로드 실패: {e}", exc_info=True)
+        logger.error(f"❌ 요청 처리 실패: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Confluence 데이터 로드 중 오류가 발생했습니다: {str(e)}"
+            detail=f"요청 처리 중 오류가 발생했습니다: {str(e)}"
         )
+
 
 @router.get("/confluence/status")
 async def get_confluence_status(
@@ -236,15 +254,12 @@ async def get_confluence_status(
     Returns:
         현재 저장된 Confluence 문서 정보
     """
-
     logger = get_logger(__name__, user_id=user["user_id"])
 
     try:
-        # Supabase에서 Confluence 문서 조회
         all_docs = supabase_service.list_documents(limit=1000)
         confluence_docs = [d for d in all_docs if d.get("source") == "confluence"]
 
-        # Space별로 문서 분류
         space_stats = {}
         for doc in confluence_docs:
             space_key = doc.get("metadata", {}).get("space_key", "unknown")
