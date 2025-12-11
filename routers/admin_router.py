@@ -1,20 +1,21 @@
-# routers/admin_router.py (✅ Background Tasks 적용)
+# routers/admin_router.py
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks  # ← BackgroundTasks 추가
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, AsyncGenerator
+import asyncio
+import json
+import time
+
 from services.confluence_service import ConfluenceService
 from services.supabase_service import supabase_service
 from services.embedding_service import embedding_service
 from services.token_chunk_service import token_chunk_service
 from auth.auth_service import verify_supabase_token
 from logging_config import get_logger
-import json
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
-
-
-# ===== 📋 요청 스키마 =====
 
 class LoadConfluenceDataRequest(BaseModel):
     """Confluence 데이터 로드 요청"""
@@ -23,193 +24,23 @@ class LoadConfluenceDataRequest(BaseModel):
     api_token: str
 
 
-# ===== 🔧 백그라운드 처리 함수 =====
-
-def process_confluence_data(request: LoadConfluenceDataRequest, user_id: str):
-    """
-    ✨ 백그라운드에서 실행되는 Confluence 데이터 로드 함수
-    """
-    logger = get_logger(__name__, user_id=user_id)
-
-    try:
-        print("\n" + "="*60)
-        print("📚 Confluence 데이터 로드 시작 (백그라운드)")
-        print("="*60)
-
-        confluence_service = ConfluenceService.initialize(
-            space_key=request.space_key,
-            atlassian_id=request.atlassian_id,
-            api_token=request.api_token
-        )
-
-        print("\n1️⃣ Confluence에서 문서 조회 중...")
-        pages = confluence_service.get_all_pages_with_content()
-
-        if not pages:
-            logger.warning(f"⚠️ {request.space_key}에서 페이지를 찾을 수 없음")
-            return
-
-        print(f"✅ {len(pages)}개 페이지 조회 완료\n")
-
-        print("2️⃣ 문서 처리 중...")
-        success_count = 0
-        skip_count = 0
-        error_count = 0
-        total_chunks = 0
-
-        for idx, page in enumerate(pages, 1):
-            try:
-                page_title = page.get('title', '제목 없음')
-                page_id = page.get('page_id', '')
-                page_content = page.get('content', '')
-                page_url = page.get('url', '')
-                page_labels = page.get('labels', [])
-                created_at = page.get('created_at')
-                updated_at = page.get('updated_at')
-                version_number = page.get('version_number', 1)
-
-                print(f"\n [{idx}/{len(pages)}] 페이지 처리: {page_title}")
-
-                # ✅ 기존 문서 확인
-                existing_doc = supabase_service.get_document_by_source_id(
-                    source="confluence",
-                    source_id=page_id
-                )
-
-                # ✅ updated_at 비교
-                if existing_doc:
-                    existing_updated_at = existing_doc.get("updated_at")
-                    confluence_updated_str = updated_at.isoformat() if updated_at else ""
-
-                    if existing_updated_at == confluence_updated_str:
-                        print(f"   ⏭️  건너뛰기 (변경 없음)")
-                        print(f"      마지막 수정: {existing_updated_at}")
-                        skip_count += 1
-                        continue
-                    else:
-                        print(f"   🔄 업데이트 (변경됨)")
-                        print(f"      기존: {existing_updated_at}")
-                        print(f"      신규: {confluence_updated_str}")
-
-                # ✅ 토큰 필터링
-                text_stats = token_chunk_service.get_text_stats(page_content)
-                print(f"   📊 원본: {text_stats['char_count']}자 / {text_stats['token_count']}토큰")
-
-                if text_stats['token_count'] < 30:
-                    print(f"   ⚠️ 내용이 너무 짧아서 스킵")
-                    skip_count += 1
-                    continue
-
-                print(f"   ├─ 문서 저장 중...")
-                saved_doc = supabase_service.add_document(
-                    source="confluence",
-                    source_id=page_id,
-                    title=page_title,
-                    content=page_content,
-                    metadata={
-                        'url': page_url,
-                        'page_url': page_url,
-                        'labels': page_labels,
-                        'source': 'confluence',
-                        'confluence_id': page_id,
-                        'token_count': text_stats['token_count'],
-                        'space_key': request.space_key,
-                        'version_number': version_number
-                    },
-                    created_at=created_at,
-                    updated_at=updated_at
-                )
-
-                document_id = saved_doc.get("id")
-                if not document_id:
-                    print(f"   ❌ 문서 저장 실패")
-                    error_count += 1
-                    continue
-
-                print(f"   ├─ ✅ 문서 저장/업데이트 완료 (ID: {document_id})")
-
-                # ✅ 2️⃣ 기존 청크 삭제 (중복 방지)
-                if existing_doc:
-                    print(f"   ├─ 🗑️  기존 청크 삭제 중...")
-                    deleted_count = supabase_service.delete_chunks_by_document_id(document_id)
-                    print(f"   ├─ ✅ {deleted_count}개 청크 삭제 완료")
-
-                print(f"   ├─ 토큰 기반 청크 분할 중...")
-                chunks = token_chunk_service.chunk_text(
-                    page_content,
-                    chunk_tokens=400,
-                    overlap_tokens=50,
-                    min_chunk_tokens=30
-                )
-                print(f"   ├─ ✅ {len(chunks)}개 청크로 분할")
-
-                print(f"   ├─ 벡터 임베딩 중...")
-                embeddings = embedding_service.embed_batch(chunks)
-
-                for chunk_num, (chunk_content, embedding) in enumerate(zip(chunks, embeddings), 1):
-                    chunk_stats = token_chunk_service.get_text_stats(chunk_content)
-                    supabase_service.add_chunk(
-                        document_id=document_id,
-                        chunk_number=chunk_num,
-                        content=chunk_content,
-                        embedding=embedding
-                    )
-                    print(f"   │  └─ 청크 {chunk_num}: {chunk_stats['char_count']}자 / {chunk_stats['token_count']}토큰")
-                    total_chunks += 1
-
-                print(f"   └─ ✅ {len(chunks)}개 청크 저장 완료")
-                success_count += 1
-
-            except Exception as e:
-                print(f"   ❌ 오류 발생: {e}")
-                logger.error(f"페이지 처리 실패: {e}", exc_info=True)
-                error_count += 1
-                continue
-
-        print("\n" + "="*60)
-        print("✅ Confluence 데이터 로드 완료!")
-        print("="*60)
-
-        print(f"\n📊 처리 결과:")
-        print(f"   - 성공: {success_count}개")
-        print(f"   - 스킵 (변경 없음): {skip_count}개")
-        print(f"   - 실패: {error_count}개")
-        print(f"   - 전체: {len(pages)}개")
-        print(f"   - 총 청크: {total_chunks}개")
-
-        logger.info(
-            "✅ Confluence 데이터 로드 완료 (백그라운드)",
-            extra={
-                "space_key": request.space_key,
-                "total_pages": len(pages),
-                "success_count": success_count,
-                "skip_count": skip_count,
-                "error_count": error_count,
-                "total_chunks": total_chunks
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"❌ 백그라운드 로드 실패: {e}", exc_info=True)
-
-
-# ===== 🔌 API 엔드포인트 =====
+# ===== 1️⃣ POST 엔드포인트 (초기 요청) =====
 
 @router.post("/confluence/load")
 async def load_confluence_data(
         request: LoadConfluenceDataRequest,
-        background_tasks: BackgroundTasks,  # ← 추가
         user: dict = Depends(verify_supabase_token)
 ):
     """
-    ✨ 관리자: Confluence 데이터 로드 (✅ 백그라운드 처리)
+    ✨ Confluence 데이터 로드 요청 (초기)
 
-    즉시 응답을 반환하고, 실제 처리는 백그라운드에서 실행됩니다.
+    즉시 응답을 반환합니다.
+    클라이언트는 이 응답의 stream_endpoint를 사용해 SSE 스트림에 연결합니다.
     """
     logger = get_logger(__name__, user_id=user["user_id"])
 
     logger.info(
-        "📚 Confluence 데이터 로드 요청 (백그라운드)",
+        "📚 Confluence 데이터 로드 요청 (POST)",
         extra={
             "space_key": request.space_key,
             "atlassian_id": request.atlassian_id[:20] + "***"
@@ -217,32 +48,174 @@ async def load_confluence_data(
     )
 
     try:
-        # ✅ 백그라운드 태스크 추가
-        background_tasks.add_task(
-            process_confluence_data,
-            request=request,
-            user_id=user["user_id"]
-        )
-
-        # ✅ 즉시 응답 반환 (타임아웃 없음!)
+        # ✅ 즉시 응답 반환
         return {
-            "status": "processing",
-            "message": f"📚 Space '{request.space_key}'의 데이터 로드를 시작했습니다. 백그라운드에서 처리 중입니다.",
+            "status": "accepted",
+            "message": f"✅ Space '{request.space_key}'의 데이터 로드를 시작합니다.",
             "space_key": request.space_key,
-            "note": "처리 상황은 백엔드 콘솔에서 확인할 수 있습니다."
+            "stream_endpoint": f"/api/admin/confluence/load-stream"
         }
-
-    except ValueError as e:
-        logger.error(f"❌ 검증 오류: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
 
     except Exception as e:
         logger.error(f"❌ 요청 처리 실패: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"요청 처리 중 오류가 발생했습니다: {str(e)}"
+            detail=f"요청 처리 중 오류: {str(e)}"
         )
 
+
+# ===== 2️⃣ GET SSE 엔드포인트 (진행 상황) =====
+
+@router.get("/confluence/load-stream")
+async def load_confluence_data_stream(
+        space_key: str,
+        atlassian_id: str,
+        api_token: str,
+        user: dict = Depends(verify_supabase_token)
+):
+    """
+    ✨ SSE: Confluence 데이터 로드 (실시간 진행 상황)
+
+    Query Parameter 형식으로 자격증명 전달
+    """
+    logger = get_logger(__name__, user_id=user["user_id"])
+
+    async def event_generator():
+        """SSE 이벤트 생성기"""
+        try:
+            yield f"data: {json.dumps({'status': 'started', 'message': 'Confluence 데이터 로드 시작'})}\n\n"
+
+            confluence_service = ConfluenceService.initialize(
+                space_key=space_key,
+                atlassian_id=atlassian_id,
+                api_token=api_token
+            )
+
+            pages = confluence_service.get_all_pages_with_content()
+
+            if not pages:
+                yield f"data: {json.dumps({'status': 'error', 'message': f'{space_key}에서 페이지를 찾을 수 없음'})}\n\n"
+                return
+
+            success_count = 0
+            skip_count = 0
+            error_count = 0
+            total_chunks = 0
+
+            for idx, page in enumerate(pages, 1):
+                try:
+                    page_title = page.get('title', '제목 없음')
+                    page_id = page.get('page_id', '')
+                    page_content = page.get('content', '')
+                    page_url = page.get('url', '')
+                    page_labels = page.get('labels', [])
+                    created_at = page.get('created_at')
+                    updated_at = page.get('updated_at')
+                    version_number = page.get('version_number', 1)
+
+                    # 진행 상황 알림
+                    yield f"data: {json.dumps({'status': 'processing', 'message': f'[{idx}/{len(pages)}] {page_title} 처리 중...', 'current': idx, 'total': len(pages), 'progress_percent': round((idx/len(pages))*100, 1)})}\n\n"
+
+                    # 기존 문서 확인
+                    existing_doc = supabase_service.get_document_by_source_id(
+                        source="confluence",
+                        source_id=page_id
+                    )
+
+                    # updated_at 비교해서 변경 없으면 스킵
+                    if existing_doc:
+                        existing_updated_at = existing_doc.get("updated_at")
+                        confluence_updated_str = updated_at.isoformat() if updated_at else ""
+
+                        if existing_updated_at == confluence_updated_str:
+                            skip_count += 1
+                            continue
+
+                    # 토큰 필터링
+                    text_stats = token_chunk_service.get_text_stats(page_content)
+
+                    if text_stats['token_count'] < 30:
+                        skip_count += 1
+                        continue
+
+                    # 문서 저장
+                    saved_doc = supabase_service.add_document(
+                        source="confluence",
+                        source_id=page_id,
+                        title=page_title,
+                        content=page_content,
+                        metadata={
+                            'url': page_url,
+                            'page_url': page_url,
+                            'labels': page_labels,
+                            'source': 'confluence',
+                            'confluence_id': page_id,
+                            'token_count': text_stats['token_count'],
+                            'space_key': space_key,
+                            'version_number': version_number
+                        },
+                        created_at=created_at,
+                        updated_at=updated_at
+                    )
+
+                    document_id = saved_doc.get("id")
+                    if not document_id:
+                        error_count += 1
+                        continue
+
+                    # 기존 청크 삭제
+                    if existing_doc:
+                        supabase_service.delete_chunks_by_document_id(document_id)
+
+                    # 청크 분할
+                    chunks = token_chunk_service.chunk_text(
+                        page_content,
+                        chunk_tokens=400,
+                        overlap_tokens=50,
+                        min_chunk_tokens=30
+                    )
+
+                    # 벡터 임베딩
+                    embeddings = embedding_service.embed_batch(chunks)
+
+                    for chunk_num, (chunk_content, embedding) in enumerate(zip(chunks, embeddings), 1):
+                        supabase_service.add_chunk(
+                            document_id=document_id,
+                            chunk_number=chunk_num,
+                            content=chunk_content,
+                            embedding=embedding
+                        )
+                        total_chunks += 1
+
+                    success_count += 1
+
+                except Exception as e:
+                    logger.error(f"페이지 처리 실패: {e}", exc_info=True)
+                    error_count += 1
+                    continue
+
+            # 완료
+            yield f"data: {json.dumps({'status': 'completed', 'success': success_count, 'skip': skip_count, 'error': error_count, 'total_chunks': total_chunks, 'message': f'✅ {success_count}개 문서 처리 완료 ({total_chunks}개 청크)'})}\n\n"
+
+            logger.info(
+                "✅ Confluence 데이터 로드 완료",
+                extra={
+                    "space_key": space_key,
+                    "success": success_count,
+                    "skip": skip_count,
+                    "error": error_count,
+                    "chunks": total_chunks
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"SSE 스트림 오류: {e}", exc_info=True)
+            yield f"data: {json.dumps({'status': 'error', 'message': f'오류: {str(e)}'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ===== 3️⃣ GET 상태 조회 =====
 
 @router.get("/confluence/status")
 async def get_confluence_status(
@@ -250,9 +223,6 @@ async def get_confluence_status(
 ):
     """
     ✨ 관리자: 현재 Confluence 상태 확인
-
-    Returns:
-        현재 저장된 Confluence 문서 정보
     """
     logger = get_logger(__name__, user_id=user["user_id"])
 
@@ -289,3 +259,16 @@ async def get_confluence_status(
     except Exception as e:
         logger.error(f"❌ 상태 조회 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/confluence/progress")
+async def get_confluence_progress(
+        user: dict = Depends(verify_supabase_token)
+):
+    """
+    ✨ 폴링용: 현재 처리 진행 상황 조회
+    """
+    return {
+        "status": "processing",
+        "message": "진행 중..."
+    }
