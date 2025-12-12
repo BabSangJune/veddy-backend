@@ -1,8 +1,7 @@
-
 import re
 import logging
 from unicodedata import normalize as unicode_normalize
-from typing import List, Dict, Any, Generator, Optional
+from typing import List, Dict, Any, Generator, Optional, Tuple
 from datetime import datetime
 
 # LangChain 1.0 Import
@@ -37,7 +36,7 @@ class SupabaseRetriever:
     """Supabase 검색 래퍼 (URL 완벽 보존, config 기반)"""
 
     def __init__(self, embeddings: Embeddings, supabase_client: SupabaseService,
-                 k: int = 30, threshold: float = None, ef_search: int = None):
+                 k: int = 10, threshold: float = None, ef_search: int = None):
         self.embeddings = embeddings
         self.supabase_client = supabase_client
 
@@ -88,8 +87,18 @@ class SupabaseRetriever:
 
         return ""
 
-    def search(self, query: str) -> tuple[str, List[Dict]]:
-        """문서 검색 실행 (URL 완벽 보존)"""
+    def search(self, query: str) -> Tuple[str, str, List[Dict]]:
+        """
+        문서 검색 실행 (URL 완벽 보존)
+
+        ✅ 변경: 2개 컨텍스트 반환 (user_context, llm_context)
+
+        Returns:
+            Tuple[str, str, List[Dict]]:
+                - user_context: 상세 포맷 (URL, 메타데이터 포함)
+                - llm_context: 간소화 포맷 (제목 + 내용만)
+                - chunks: 원본 청크 리스트
+        """
         try:
             query_embedding = self.embeddings.embed_query(query)
             chunks = self.supabase_client.search_chunks(
@@ -100,16 +109,21 @@ class SupabaseRetriever:
             )
 
             if not chunks:
-                return "관련 문서를 찾을 수 없습니다.", []
+                error_msg = "관련 문서를 찾을 수 없습니다."
+                return error_msg, error_msg, []
 
-            context_parts = []
+            # ✅ 사용자용 상세 컨텍스트
+            user_context_parts = []
+            # ✅ LLM용 간소화 컨텍스트
+            llm_context_parts = []
+
             for i, chunk in enumerate(chunks, 1):
                 title = chunk.get('title', '제목 없음')
                 content = chunk.get('content', '')
                 source = chunk.get('source', '출처 미상')
                 url = chunk.get('url', '')
 
-                # 🔥 NEW! 메타데이터 추가
+                # 메타데이터
                 document_id = chunk.get('document_id', 'N/A')
                 last_modified = chunk.get('last_modified', 'N/A')
                 page_number = chunk.get('page_number', 'N/A')
@@ -122,14 +136,14 @@ class SupabaseRetriever:
                     score = chunk.get('score', 0.0)
                     score_label = f"관련도: {score:.4f}"
 
-                # ✅ URL 완벽 보존
+                # URL 완벽 보존
                 url_section = ""
                 if url and url.strip():
                     url_section = f"\n📍 출처: {source}\n🔗 URL: {url}"
                 else:
                     url_section = f"\n📍 출처: {source}"
 
-                # 🔥 NEW! 메타데이터 섹션
+                # 메타데이터 섹션
                 metadata_section = ""
                 if document_id != 'N/A' or last_modified != 'N/A':
                     metadata_section = f"\n📋 메타데이터:"
@@ -140,7 +154,8 @@ class SupabaseRetriever:
                     if page_number != 'N/A':
                         metadata_section += f"\n  • 페이지: {page_number}"
 
-                context_parts.append(
+                # ✅ 사용자용 (기존 상세 포맷)
+                user_context_parts.append(
                     f"【문서 {i}】{title}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"{score_label}\n"
@@ -149,15 +164,33 @@ class SupabaseRetriever:
                     f"{metadata_section}"
                 )
 
-            formatted_context = "\n\n" + "="*50 + "\n\n".join(context_parts)
-            return formatted_context, chunks
+                # ✅ LLM용 (간소화: 제목 + 내용만)
+                llm_context_parts.append(
+                    f"[문서 {i}] {title}\n{content}"
+                )
+
+            user_context = "\n\n" + "="*50 + "\n\n".join(user_context_parts)
+            llm_context = "\n\n".join(llm_context_parts)
+
+            return user_context, llm_context, chunks
 
         except Exception as e:
             logger.error(f"검색 중 오류: {str(e)}", exc_info=True)
-            return f"검색 중 오류: {str(e)}", []
+            error_msg = f"검색 중 오류: {str(e)}"
+            return error_msg, error_msg, []
 
-    def search_hybrid(self, query: str, use_reranking: bool = None) -> tuple[str, List[Dict]]:
-        """하이브리드 검색 (PGroonga + pgvector) + 리랭킹 + URL 자동 추가"""
+    def search_hybrid(self, query: str, use_reranking: bool = None) -> Tuple[str, str, List[Dict]]:
+        """
+        하이브리드 검색 (PGroonga + pgvector) + 리랭킹 + URL 자동 추가
+
+        ✅ 변경: 2개 컨텍스트 반환 (user_context, llm_context)
+
+        Returns:
+            Tuple[str, str, List[Dict]]:
+                - user_context: 상세 포맷 (URL, 메타데이터 포함)
+                - llm_context: 간소화 포맷 (제목 + 내용만)
+                - chunks: 원본 청크 리스트
+        """
 
         if use_reranking is None:
             use_reranking = RERANKER_CONFIG['enabled']
@@ -179,11 +212,12 @@ class SupabaseRetriever:
             ).execute()
 
             if not response.data:
-                return "관련 문서를 찾을 수 없습니다.", []
+                error_msg = "관련 문서를 찾을 수 없습니다."
+                return error_msg, error_msg, []
 
             chunks = response.data
 
-            # ✅ 3. URL 자동 추가 (RPC 결과에 url이 없으면 수동으로 추가)
+            # 3. URL 자동 추가 (RPC 결과에 url이 없으면 수동으로 추가)
             logger.info(f"RPC 검색 결과: {len(chunks)}개 청크 | URL 자동 추가 시작")
             for chunk in chunks:
                 if not chunk.get('url') or not chunk.get('url').strip():
@@ -203,8 +237,11 @@ class SupabaseRetriever:
                 )
                 logger.info(f"리랭킹 후 청크 수: {len(chunks)}")
 
-            # 5. 응답 포맷팅 (URL 완벽 보존)
-            context_parts = []
+            # ✅ 5. 두 가지 포맷으로 컨텍스트 생성
+            user_context_parts = []
+            llm_context_parts = []
+            max_content_length = 800  # ✅ LLM용 문서당 최대 길이 (옵션)
+
             for i, chunk in enumerate(chunks, 1):
                 title = chunk.get('title', '제목 없음')
                 content = chunk.get('content', '')
@@ -219,48 +256,76 @@ class SupabaseRetriever:
                     score = chunk.get('score', 0.0)
                     score_label = f"관련도: {score:.4f}"
 
-                # ✅ URL 완벽 보존
+                # URL 완벽 보존
                 url_section = ""
                 if url and url.strip():
                     url_section = f"\n📍 출처: {source}\n🔗 URL: {url}"
                 else:
                     url_section = f"\n📍 출처: {source}"
 
-                context_parts.append(
+                # ✅ 사용자용 (기존 상세 포맷)
+                user_context_parts.append(
                     f"[문서 {i}] {title}\n"
                     f"{score_label}\n"
                     f"내용:\n{content}{url_section}"
                 )
 
-            formatted_context = "\n\n---\n\n".join(context_parts)
-            return formatted_context, chunks
+                # ✅ LLM용 (간소화: 제목 + 내용만, 길이 제한)
+                llm_content = content
+                if len(llm_content) > max_content_length:
+                    llm_content = llm_content[:max_content_length] + "..."
+
+                llm_context_parts.append(
+                    f"[문서 {i}] {title}\n{llm_content}"
+                )
+
+            user_context = "\n\n---\n\n".join(user_context_parts)
+            llm_context = "\n\n".join(llm_context_parts)
+
+            return user_context, llm_context, chunks
 
         except Exception as e:
             logger.error(f"하이브리드 검색 오류: {e}", exc_info=True)
-            return f"검색 중 오류: {str(e)}", []
+            error_msg = f"검색 중 오류: {str(e)}"
+            return error_msg, error_msg, []
 
-    def search_multi_topic(self, query: str, topics: list) -> tuple[str, List[Dict]]:
-        """멀티 주제 검색 (비교 모드) - 각 토픽별 따로 검색 후 병합"""
+    def search_multi_topic(self, query: str, topics: list) -> Tuple[str, str, List[Dict]]:
+        """
+        멀티 주제 검색 (비교 모드) - 각 토픽별 따로 검색 후 병합
+
+        ✅ 변경: 2개 컨텍스트 반환 (user_context, llm_context)
+
+        Returns:
+            Tuple[str, str, List[Dict]]:
+                - user_context: 상세 포맷 (URL, 메타데이터 포함)
+                - llm_context: 간소화 포맷 (제목 + 내용만)
+                - chunks: 원본 청크 리스트
+        """
 
         if not topics or len(topics) < 2:
             return self.search_hybrid(query)
 
-        all_results = []
+        all_user_results = []
+        all_llm_results = []
         all_chunks = []
 
         for topic in topics:
             search_query = f"{topic} 베슬링크"
-            context, chunks = self.search_hybrid(search_query)
+            user_ctx, llm_ctx, chunks = self.search_hybrid(search_query)
 
             # 각 주제별로 헤더 추가
-            topic_section = f"\n### 【{topic}】\n{context}"
-            all_results.append(topic_section)
+            user_topic_section = f"\n### 【{topic}】\n{user_ctx}"
+            llm_topic_section = f"\n### 【{topic}】\n{llm_ctx}"
+
+            all_user_results.append(user_topic_section)
+            all_llm_results.append(llm_topic_section)
             all_chunks.extend(chunks)
 
         # 결합
-        combined_context = "\n---\n".join(all_results)
+        combined_user_context = "\n---\n".join(all_user_results)
+        combined_llm_context = "\n---\n".join(all_llm_results)
 
-        return combined_context, all_chunks
+        return combined_user_context, combined_llm_context, all_chunks
 
 # ===== 베디 프롬프트 템플릿 (완전 개선) =====
 
@@ -661,7 +726,6 @@ class LangChainRAGService:
         # 5. 최종 정리
         return '\n'.join(lines).strip()
 
-    # services/langchain_rag_service.py
     def process_query_streaming(
             self,
             user_id: str,
@@ -670,7 +734,7 @@ class LangChainRAGService:
             supabase_client: Optional[SupabaseService] = None,
             history: str = None,
             comparison_info: dict = None,
-            conversation_context: List[Dict] = None  # ✅ 추가
+            conversation_context: List[Dict] = None
     ) -> Generator[str, None, None]:
         """
         RAG 스트리밍 응답 (테이블 모드 + 비교 모드 조합 가능)
@@ -678,6 +742,8 @@ class LangChainRAGService:
         아키텍처:
         1️⃣ Step 1: 검색 방식 결정 (mode 기반) → context 생성
         2️⃣ Step 2: 프롬프트 선택 (table_mode 기반) → 독립적 적용
+
+        ✅ 최적화: LLM에는 간소화 컨텍스트만 전달
         """
 
         try:
@@ -687,36 +753,27 @@ class LangChainRAGService:
                 comparison_info = {"is_comparison": False, "topics": []}
 
             # 🎯 Step 1: 검색 방식 결정 (모드 기반)
-            # ┌─────────────────────────────────────────┐
-            # │ 비교 모드 vs 일반 모드 (독립적)         │
-            # └─────────────────────────────────────────┘
-
             is_comparison = comparison_info.get("is_comparison", False)
             topics = comparison_info.get("topics", [])
 
             if is_comparison and topics and len(topics) >= 2:
-                # ✅ 비교 모드: 각 토픽별 검색
+                # ✅ 비교 모드: 각 토픽별 검색 (3개 반환값)
                 logger.info("🔄 비교 모드 검색", extra={
                     "topics": topics,
                     "confidence": comparison_info.get("confidence", "N/A")
                 })
-                context_text, raw_chunks = self.retriever.search_multi_topic(
+                user_context, llm_context, raw_chunks = self.retriever.search_multi_topic(
                     query, topics
                 )
                 is_in_comparison_mode = True
 
             else:
-                # ✅ 일반 모드: 일반 하이브리드 검색
+                # ✅ 일반 모드: 일반 하이브리드 검색 (3개 반환값)
                 logger.info("📝 일반 모드 검색")
-                context_text, raw_chunks = self.retriever.search_hybrid(query)
+                user_context, llm_context, raw_chunks = self.retriever.search_hybrid(query)
                 is_in_comparison_mode = False
 
-            # 🎯 Step 2: 프롬프트 선택 (table_mode 기반) ← 독립적
-            # ┌─────────────────────────────────────────┐
-            # │ 테이블 형식 여부 (모드와 무관)          │
-            # │ 어떤 검색이든 테이블로 표현 가능        │
-            # └─────────────────────────────────────────┘
-
+            # 🎯 Step 2: 프롬프트 선택 (table_mode 기반)
             prompt_template = self._select_prompt_template(
                 table_mode=table_mode,
                 is_comparison=is_in_comparison_mode,
@@ -725,13 +782,15 @@ class LangChainRAGService:
 
             logger.info("📋 프롬프트 선택", extra={
                 "table_mode": table_mode,
-                "is_comparison": is_in_comparison_mode
+                "is_comparison": is_in_comparison_mode,
+                "user_context_length": len(user_context),
+                "llm_context_length": len(llm_context)  # ✅ 길이 비교 로깅
             })
 
-            # ✅ Step 3: 메시지 포맷
+            # ✅ Step 3: 메시지 포맷 (LLM용 간소화 컨텍스트 사용)
             messages = self._safe_format(
                 prompt_template,
-                context=context_text,
+                context=llm_context,  # 🚀 핵심: LLM에는 간소화 컨텍스트만!
                 query=query,
                 history=history or "",
                 topics=", ".join(topics) if is_in_comparison_mode else ""
@@ -752,7 +811,6 @@ class LangChainRAGService:
             logger.error(f"❌ RAG 오류: {e}", exc_info=True)
             yield f"\n\n[오류]\n{str(e)}"
 
-        # ✅ 새 메서드: 프롬프트 선택 로직
     def _select_prompt_template(
             self,
             table_mode: bool,

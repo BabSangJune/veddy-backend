@@ -98,7 +98,7 @@ else:
 def get_vector_search_config():
     """환경별 최적 config 반환"""
     base_config = {
-        'ef_search': int(os.getenv("VECTOR_EF_SEARCH", "200")),
+        'ef_search': int(os.getenv("VECTOR_EF_SEARCH", "40")),
         'chunk_tokens': int(os.getenv("VECTOR_CHUNK_TOKENS", "400")),
         'overlap_tokens': int(os.getenv("VECTOR_OVERLAP_TOKENS", "50")),
         'min_chunk_tokens': int(os.getenv("VECTOR_MIN_CHUNK_TOKENS", "30")),
@@ -117,5 +117,5 @@ RERANKER_CONFIG = {
     'model_name': 'dragonkue/bge-reranker-v2-m3-ko',
     'max_length': 512,
     'enabled': True,  # 리랭킹 활성화 여부
-    'top_k': 10  # 최종 반환 개수
+    'top_k': 8  # 최종 반환 개수
 }
