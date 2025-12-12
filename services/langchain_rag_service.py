@@ -107,25 +107,49 @@ class SupabaseRetriever:
                 title = chunk.get('title', '제목 없음')
                 content = chunk.get('content', '')
                 source = chunk.get('source', '출처 미상')
-                similarity = chunk.get('similarity', 0.0)
+                url = chunk.get('url', '')
 
-                # ✅ URL 추출 (3가지 방법 시도)
-                url = self._get_chunk_url(chunk)
+                # 🔥 NEW! 메타데이터 추가
+                document_id = chunk.get('document_id', 'N/A')
+                last_modified = chunk.get('last_modified', 'N/A')
+                page_number = chunk.get('page_number', 'N/A')
 
-                # ✅ URL 완벽 보존 (절대 짤리지 않게)
+                # 리랭크 점수 표시
+                if 'rerank_score' in chunk:
+                    score = chunk.get('rerank_score', 0.0)
+                    score_label = f"리랭크: {score:.4f}"
+                else:
+                    score = chunk.get('score', 0.0)
+                    score_label = f"관련도: {score:.4f}"
+
+                # ✅ URL 완벽 보존
                 url_section = ""
                 if url and url.strip():
                     url_section = f"\n📍 출처: {source}\n🔗 URL: {url}"
                 else:
                     url_section = f"\n📍 출처: {source}"
 
+                # 🔥 NEW! 메타데이터 섹션
+                metadata_section = ""
+                if document_id != 'N/A' or last_modified != 'N/A':
+                    metadata_section = f"\n📋 메타데이터:"
+                    if document_id != 'N/A':
+                        metadata_section += f"\n  • 문서 ID: {document_id}"
+                    if last_modified != 'N/A':
+                        metadata_section += f"\n  • 최근 수정: {last_modified}"
+                    if page_number != 'N/A':
+                        metadata_section += f"\n  • 페이지: {page_number}"
+
                 context_parts.append(
-                    f"[문서 {i}] {title}\n"
-                    f"유사도: {similarity:.2f}\n"
-                    f"내용:\n{content}{url_section}"
+                    f"【문서 {i}】{title}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{score_label}\n"
+                    f"내용:\n{content}"
+                    f"{url_section}"
+                    f"{metadata_section}"
                 )
 
-            formatted_context = "\n\n---\n\n".join(context_parts)
+            formatted_context = "\n\n" + "="*50 + "\n\n".join(context_parts)
             return formatted_context, chunks
 
         except Exception as e:
