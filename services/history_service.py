@@ -23,9 +23,9 @@ class HistoryService:
     """대화 히스토리 관리 서비스"""
 
     # 최근 히스토리 개수 설정
-    DEFAULT_LIMIT = 10
+    DEFAULT_LIMIT = 15
     MAX_QUERY_LENGTH = 100
-    MAX_RESPONSE_LENGTH = 150
+    MAX_RESPONSE_LENGTH = 1000
 
     def __init__(self, supabase_client: Optional[SupabaseService] = None):
         """초기화"""
