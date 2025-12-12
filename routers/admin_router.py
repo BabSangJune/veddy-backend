@@ -1,4 +1,4 @@
-# routers/admin_router.py
+# routers/admin_router.py (수정된 버전)
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -76,11 +76,13 @@ async def load_confluence_data_stream(
     """
     ✨ SSE: Confluence 데이터 로드 (실시간 진행 상황)
     Query Parameter 형식으로 자격증명 전달
+
+    🔧 수정: Generator로 하나씩 처리 (메모리 효율, 타임아웃 해결)
     """
     logger = get_logger(__name__, user_id=user["user_id"])
 
     async def event_generator():
-        """SSE 이벤트 생성기"""
+        """SSE 이벤트 생성기 - 실제 스트리밍"""
         try:
             # 1️⃣ 시작 이벤트
             yield f"data: {json.dumps({'status': 'started', 'message': 'Confluence 데이터 로드 시작'})}\n\n"
@@ -91,23 +93,22 @@ async def load_confluence_data_stream(
                 api_token=api_token
             )
 
-            pages = confluence_service.get_all_pages_with_content()
+            yield f"data: {json.dumps({'status': 'counting', 'message': '📊 총 페이지 개수 조회 중...'})}\n\n"
+            total_pages_count = confluence_service.get_total_pages_count()
+            yield f"data: {json.dumps({'status': 'counting_complete', 'total_pages': total_pages_count, 'message': f'✅ 총 {total_pages_count}개 페이지 발견. 처리 시작합니다.', 'progress_percent': 1})}\n\n"
 
-            if not pages:
-                yield f"data: {json.dumps({'status': 'error', 'message': f'{space_key}에서 페이지를 찾을 수 없음'})}\n\n"
-                return
+            pages_generator = confluence_service.get_all_pages_with_content_streaming()
 
-            total_pages = len(pages)
             success_count = 0
             skip_count = 0
             error_count = 0
             total_chunks = 0
+            idx = 0
 
-            # 2️⃣ 페이지 로드 완료 알림
-            yield f"data: {json.dumps({'status': 'pages_loaded', 'total_pages': total_pages, 'message': f'총 {total_pages}개 페이지 로드 완료. 처리 시작합니다.', 'progress_percent': 5})}\n\n"
+            # 2️⃣ 각 페이지 처리 (하나씩, 실시간)
+            for page in pages_generator:
+                idx += 1
 
-            # 3️⃣ 각 페이지 처리
-            for idx, page in enumerate(pages, 1):
                 try:
                     page_title = page.get('title', '제목 없음')
                     page_id = page.get('page_id', '')
@@ -118,9 +119,12 @@ async def load_confluence_data_stream(
                     updated_at = page.get('updated_at')
                     version_number = page.get('version_number', 1)
 
-                    # 진행 상황 알림 (처리 시작)
-                    progress = int(5 + ((idx - 1) / total_pages) * 90)  # 5% ~ 95%
-                    yield f"data: {json.dumps({'status': 'processing', 'message': f'[{idx}/{total_pages}] {page_title} 처리 중...', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'progress_percent': progress, 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks})}\n\n"
+                    # 진행 상황 알림 (처리 시작) - 즉시 반영
+                    progress = int((idx / max(total_pages_count, 1)) * 90) if total_pages_count > 0 else 0
+                    yield f"data: {json.dumps({'status': 'processing', 'message': f'[{idx}/{total_pages_count}] {page_title} 처리 중...', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages_count, 'progress_percent': progress, 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks})}\n\n"
+
+                    # ✅ 중요: asyncio.sleep(0) 추가 - 다른 작업 양보
+                    await asyncio.sleep(0)
 
                     # 기존 문서 확인
                     existing_doc = supabase_service.get_document_by_source_id(
@@ -180,12 +184,14 @@ async def load_confluence_data_stream(
                     )
 
                     # ✅ 임베딩 전 진행 상황 알림
-                    yield f"data: {json.dumps({'status': 'embedding', 'message': f'[{idx}/{total_pages}] {page_title} 임베딩 중... ({len(chunks)}개 청크)', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'progress_percent': progress, 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks})}\n\n"
+                    yield f"data: {json.dumps({'status': 'embedding', 'message': f'[{idx}] {page_title} 임베딩 중... ({len(chunks)}개 청크)', 'current_page': page_title, 'processed_pages': idx, 'chunks_count': len(chunks)})}\n\n"
+
+                    await asyncio.sleep(0)
 
                     # 벡터 임베딩
                     embeddings = embedding_service.embed_batch(chunks)
 
-                    # ✅ 배치 저장 (N+1 쿼리 제거 - 가장 중요!)
+                    # ✅ 배치 저장
                     chunks_batch = []
                     for chunk_num, (chunk_content, embedding) in enumerate(zip(chunks, embeddings), 1):
                         chunks_batch.append({
@@ -195,31 +201,30 @@ async def load_confluence_data_stream(
                             "embedding": embedding
                         })
 
-                    # 배치 저장 (10개씩)
                     saved_count = supabase_service.add_chunks_batch(chunks_batch)
                     total_chunks += saved_count
 
-                    # SSE 진행 상황 업데이트
-                    yield f"data: {json.dumps({'status': 'chunks_saved', 'message': f'[{idx}/{total_pages}] {page_title} 청크 저장: {saved_count}개', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'chunks_saved': saved_count, 'total_chunks': total_chunks})}\n\n"
-
+                    # ✅ 페이지 완료 알림 (즉시)
                     success_count += 1
+                    progress = int((idx / max(total_pages_count, 1)) * 90) if total_pages_count > 0 else 0
+                    yield f"data: {json.dumps({'status': 'page_completed', 'message': f'[{idx}/{total_pages_count}] {page_title} 완료 ({saved_count}개 청크)', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages_count, 'success_count': success_count, 'total_chunks': total_chunks, 'progress_percent': progress})}\n\n"
 
-                    # ✅ 페이지 완료 알림
-                    yield f"data: {json.dumps({'status': 'page_completed', 'message': f'[{idx}/{total_pages}] {page_title} 완료 ({len(chunks)}개 청크)', 'current_page': page_title, 'processed_pages': idx, 'total_pages': total_pages, 'progress_percent': progress, 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks})}\n\n"
+                    await asyncio.sleep(0)
 
                 except Exception as e:
                     logger.error(f"페이지 처리 실패: {e}", exc_info=True)
                     error_count += 1
-                    yield f"data: {json.dumps({'status': 'page_error', 'message': f'❌ 페이지 처리 실패: {str(e)}', 'processed_pages': idx, 'total_pages': total_pages, 'error_count': error_count})}\n\n"
+                    yield f"data: {json.dumps({'status': 'page_error', 'message': f'❌ [{idx}] {str(e)[:50]}', 'processed_pages': idx, 'error_count': error_count})}\n\n"
                     continue
 
             # ✅ 최종 완료
-            yield f"data: {json.dumps({'status': 'completed', 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks, 'progress_percent': 100, 'message': f'✅ {success_count}개 문서 처리 완료 ({total_chunks}개 청크 생성)'})}\n\n"
+            yield f"data: {json.dumps({'status': 'completed', 'success_count': success_count, 'skip_count': skip_count, 'error_count': error_count, 'total_chunks': total_chunks, 'total_pages': total_pages_count, 'progress_percent': 100, 'message': f'✅ {success_count}개 문서 처리 완료 ({total_chunks}개 청크 생성)'})}\n\n"
 
             logger.info(
                 "✅ Confluence 데이터 로드 완료",
                 extra={
                     "space_key": space_key,
+                    "total_pages": idx,
                     "success": success_count,
                     "skip": skip_count,
                     "error": error_count,
@@ -231,8 +236,15 @@ async def load_confluence_data_stream(
             logger.error(f"SSE 스트림 오류: {e}", exc_info=True)
             yield f"data: {json.dumps({'status': 'error', 'message': f'오류: {str(e)}'})}\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # ✅ Nginx 버퍼링 비활성화
+        }
+    )
 
 
 # ===== 3️⃣ GET 상태 조회 =====

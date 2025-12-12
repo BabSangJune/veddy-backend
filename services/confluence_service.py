@@ -490,5 +490,221 @@ class ConfluenceService:
 
         return pages_with_content
 
+    def get_total_pages_count(self) -> int:
+        """
+        ✅ 총 페이지 개수만 조회 (빠름!)
+
+        Cursor 기반 페이지네이션으로 모든 페이지를 센다.
+        내용은 로드하지 않으므로 매우 빠릅니다.
+
+        Returns:
+            총 페이지 개수
+
+        Example:
+            total = confluence_service.get_total_pages_count()
+            print(f"총 {total}개 페이지")  # 총 120개 페이지
+        """
+        print(f"\n🔍 총 페이지 개수 조회:")
+        print(f"  - Space Key: {self.space_key}")
+
+        try:
+            # Step 1️⃣: 모든 Space 조회
+            spaces_url = f"{self.base_url}/api/v2/spaces"
+            spaces_params = {"limit": 100}
+
+            response = requests.get(spaces_url, headers=self.headers, params=spaces_params, timeout=30)
+            response.raise_for_status()
+
+            all_spaces = response.json().get("results", [])
+
+            # Step 2️⃣: 우리가 찾는 Space 필터링
+            target_space = None
+            for space in all_spaces:
+                if space.get("key") == self.space_key:
+                    target_space = space
+                    break
+
+            if not target_space:
+                print(f"❌ Space '{self.space_key}' 찾을 수 없음")
+                return 0
+
+            space_id = target_space.get("id")
+            print(f"  - ✅ Space ID: {space_id}")
+
+            # Step 3️⃣: 모든 페이지 개수 세기 (Cursor 기반)
+            all_pages = []
+            cursor = None
+            api_call_count = 0
+
+            while True:
+                pages_url = f"{self.base_url}/api/v2/spaces/{space_id}/pages"
+                pages_params = {
+                    "limit": 100,
+                    "expand": "body.storage"
+                }
+
+                if cursor:
+                    pages_params["cursor"] = cursor
+
+                response = requests.get(pages_url, headers=self.headers, params=pages_params, timeout=30)
+                response.raise_for_status()
+
+                response_data = response.json()
+                batch_pages = response_data.get("results", [])
+                api_call_count += 1
+
+                if not batch_pages:
+                    break
+
+                all_pages.extend(batch_pages)
+                print(f"  - 📄 배치 {api_call_count}: {len(batch_pages)}개 | 누적: {len(all_pages)}개")
+
+                # 다음 cursor 확인
+                links = response_data.get("_links", {})
+                next_cursor = links.get("next")
+
+                if not next_cursor:
+                    break
+
+                # Cursor 추출
+                import urllib.parse
+                parsed = urllib.parse.urlparse(next_cursor)
+                cursor_param = urllib.parse.parse_qs(parsed.query).get("cursor", [None])[0]
+                cursor = cursor_param
+
+            total_count = len(all_pages)
+            print(f"✅ 총 {total_count}개 페이지 (API 호출: {api_call_count}회)")
+            return total_count
+
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Confluence API 요청 오류: {e}")
+            return 0
+
+
+    def get_all_pages_with_content_streaming(self):
+        """
+        ✅ 공간의 페이지를 하나씩 yield (진짜 스트리밍!)
+
+        🔧 개선: Cursor로 한 번씩만 로드 (메모리 효율적 + 빠름)
+
+        Returns:
+            페이지 정보를 하나씩 yield
+        """
+        from datetime import datetime
+        from dateutil import parser as date_parser
+        import urllib.parse
+
+        print(f"\n🔍 Space 페이지 스트리밍 조회:")
+        print(f"  - Space Key: {self.space_key}")
+
+        try:
+            # Step 1️⃣: 모든 Space 조회
+            spaces_url = f"{self.base_url}/api/v2/spaces"
+            spaces_params = {"limit": 100}
+
+            response = requests.get(spaces_url, headers=self.headers, params=spaces_params, timeout=30)
+            response.raise_for_status()
+
+            all_spaces = response.json().get("results", [])
+
+            # Step 2️⃣: 우리가 찾는 Space 필터링
+            target_space = None
+            for space in all_spaces:
+                if space.get("key") == self.space_key:
+                    target_space = space
+                    break
+
+            if not target_space:
+                print(f"❌ Space '{self.space_key}' 찾을 수 없음")
+                return
+
+            space_id = target_space.get("id")
+            print(f"  - ✅ Space ID: {space_id}")
+
+            # Step 3️⃣: 페이지를 Cursor로 하나씩 로드 (스트리밍)
+            cursor = None
+            batch_count = 0
+
+            while True:
+                batch_count += 1
+                pages_url = f"{self.base_url}/api/v2/spaces/{space_id}/pages"
+                pages_params = {
+                    "limit": 100,
+                    "expand": "body.storage"
+                }
+
+                if cursor:
+                    pages_params["cursor"] = cursor
+
+                print(f"  - 배치 {batch_count} 로드 중... (cursor={'있음' if cursor else '없음'})")
+
+                response = requests.get(pages_url, headers=self.headers, params=pages_params, timeout=30)
+                response.raise_for_status()
+
+                response_data = response.json()
+                batch_pages = response_data.get("results", [])
+
+                if not batch_pages:
+                    print(f"  - ✅ 더 이상 페이지 없음")
+                    break
+
+                print(f"  - 📄 배치 {batch_count}: {len(batch_pages)}개 페이지")
+
+                # 🔧 개선: 각 페이지를 하나씩 yield (메모리에 안 쌓임!)
+                for page in batch_pages:
+                    page_id = page.get("id")
+                    title = page.get("title", "Untitled")
+                    relative_url = page.get("_links", {}).get("webui", "")
+                    full_url = f"{self.base_url}{relative_url}" if relative_url else ""
+
+                    # 상세 내용 조회 (각 페이지마다 즉시)
+                    full_page = self.get_page_content(page_id)
+
+                    if full_page:
+                        storage_html = full_page.get("body", {}).get("storage", {}).get("value", "")
+                        content = self.extract_text_from_html(storage_html)
+
+                        created_at_str = full_page.get("createdAt")
+                        updated_at_str = full_page.get("version", {}).get("createdAt")
+
+                        try:
+                            created_at = date_parser.parse(created_at_str) if created_at_str else datetime.now()
+                        except:
+                            created_at = datetime.now()
+
+                        try:
+                            updated_at = date_parser.parse(updated_at_str) if updated_at_str else datetime.now()
+                        except:
+                            updated_at = datetime.now()
+
+                        # ✅ 즉시 yield (다음 페이지 로드 전에 반환)
+                        yield {
+                            "page_id": page_id,
+                            "title": title,
+                            "url": full_url,
+                            "content": content,
+                            "labels": [label.get("name") for label in
+                                       full_page.get("labels", {}).get("results", [])],
+                            "created_at": created_at,
+                            "updated_at": updated_at,
+                            "version_number": full_page.get("version", {}).get("number", 1)
+                        }
+
+                # 다음 cursor 확인
+                links = response_data.get("_links", {})
+                next_cursor = links.get("next")
+
+                if not next_cursor:
+                    print(f"  - ✅ 마지막 배치 도달")
+                    break
+
+                # Cursor 추출
+                parsed = urllib.parse.urlparse(next_cursor)
+                cursor_param = urllib.parse.parse_qs(parsed.query).get("cursor", [None])[0]
+                cursor = cursor_param
+
+        except Exception as e:
+            print(f"❌ 페이지 스트리밍 오류: {e}")
+            return
 
 confluence_service = None
